@@ -29,9 +29,9 @@ NOTION_CFG_FILE = ROOT / "notion_config.json"
 # Warning: oklch hue 58 (amber), ref: oklch(66.6% 0.179 58)
 # Error: oklch hue 4 (rose-crimson), ref: oklch(52.5% 0.223 4)
 C_BG        = "#090915"
-C_GLASS     = "#ffffff0d"
-C_GLASS_HVR = "#ffffff18"
-C_BORDER    = "#ffffff18"
+C_GLASS     = "#ffffff,0.051"
+C_GLASS_HVR = "#ffffff,0.094"
+C_BORDER    = "#ffffff,0.094"
 C_ACCENT    = "#c254cb"    # oklch(63% 0.20 324) purple-magenta
 C_ACCENT2   = "#d982df"    # oklch(73% 0.16 324) lavender
 C_SUCCESS   = "#34d399"
@@ -202,7 +202,7 @@ def glass(content, padding=20, expand=False, margin=None, height=None):
         shadow=ft.BoxShadow(
             spread_radius=0,
             blur_radius=28,
-            color="#00000028",
+            color="#000000,0.157",
             offset=ft.Offset(0, 6),
         ),
     )
@@ -218,7 +218,7 @@ def dim(text, size=13, color=C_DIM):
 
 def badge(label, ok, msg):
     c  = C_SUCCESS if ok else C_ERROR
-    bg = C_SUCCESS + "1a" if ok else C_ERROR + "1a"
+    bg = f"{C_SUCCESS},0.1" if ok else f"{C_ERROR},0.1"
     ic = ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if ok else ft.Icons.CANCEL_OUTLINED
     return ft.Container(
         content=ft.Column([
@@ -227,7 +227,7 @@ def badge(label, ok, msg):
             ft.Text(msg, color=C_DIM, size=11),
         ], spacing=3),
         bgcolor=bg,
-        border=_ball(1, c + "33"),
+        border=_ball(1, f"{c},0.2"),
         border_radius=12,
         padding=14,
         expand=True,
@@ -243,7 +243,7 @@ def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
             shape=ft.RoundedRectangleBorder(radius=12),
             padding=ft.padding.Padding(left=22, right=22, top=13, bottom=13),
             elevation=0,
-            overlay_color="#ffffff18",
+            overlay_color="#ffffff,0.094",
         ),
     )
 
@@ -256,7 +256,7 @@ def ghost_btn(text, on_click, icon=None):
             side=ft.BorderSide(1, C_BORDER),
             shape=ft.RoundedRectangleBorder(radius=12),
             padding=ft.padding.Padding(left=18, right=18, top=13, bottom=13),
-            overlay_color="#ffffff0d",
+            overlay_color="#ffffff,0.051",
         ),
     )
 
@@ -300,25 +300,40 @@ def main(page: ft.Page):
 
     _cs = ft.ColorScheme(
         primary=C_ACCENT,
-        primary_container=C_ACCENT + "33",
+        primary_container=f"{C_ACCENT},0.2",
         on_primary=C_TEXT,
         on_primary_container=C_TEXT,
         secondary=C_ACCENT2,
-        secondary_container=C_ACCENT2 + "22",
+        secondary_container=f"{C_ACCENT2},0.133",
         on_secondary=C_TEXT,
         on_secondary_container=C_TEXT,
-        tertiary=C_ACCENT,          # lock tertiary = same purple; prevents MD3 amber bleed
-        tertiary_container=C_GLASS,
+        tertiary=C_ACCENT,
+        tertiary_container="#0f0f20",
         on_tertiary=C_TEXT,
         on_tertiary_container=C_TEXT,
         surface=C_BG,
-        surface_tint=C_ACCENT,
+        surface_tint=C_BG,          # lock tint = BG so MD3 surface containers stay dark
+        surface_dim=C_BG,
+        surface_bright="#0f0f1f",
+        surface_container_lowest=C_BG,
+        surface_container_low="#0a0a18",
+        surface_container="#0d0d1e",
+        surface_container_high="#111125",
+        surface_container_highest="#181830",
         on_surface=C_TEXT,
         on_surface_variant=C_DIM,
+        outline="#ffffff,0.133",
+        outline_variant="#ffffff,0.067",
         error=C_ERROR,
         on_error=C_TEXT,
+        shadow="#000000",
+        scrim="#000000",
     )
-    _theme      = ft.Theme(color_scheme=_cs)
+    _theme = ft.Theme(
+        color_scheme=_cs,
+        use_material3=False,    # disable M3 auto-color generation; prevents amber/yellow bleed
+        scaffold_bgcolor=C_BG,
+    )
     page.theme      = _theme   # light theme (fallback)
     page.dark_theme = _theme   # dark theme — used when theme_mode=DARK
     page.padding    = 0
@@ -541,14 +556,14 @@ def main(page: ft.Page):
                     shape=ft.RoundedRectangleBorder(radius=12),
                     padding=ft.padding.Padding(left=32, right=32, top=14, bottom=14),
                     elevation=0,
-                    overlay_color="#ffffff18",
+                    overlay_color="#ffffff,0.094",
                 ),
             ),
             result_text,
             ft.Container(height=8),
             ft.Container(
                 content=ft.Column([log_field], scroll=ft.ScrollMode.AUTO),
-                bgcolor="#ffffff08",
+                bgcolor="#ffffff,0.031",
                 border=_ball(1, C_BORDER),
                 border_radius=12,
                 padding=12,
@@ -947,7 +962,7 @@ def main(page: ft.Page):
             padding=20,
             margin=ft.margin.Margin(left=0, right=0, top=0, bottom=10),
             shadow=ft.BoxShadow(spread_radius=0, blur_radius=20,
-                                color="#00000022", offset=ft.Offset(0, 4)),
+                                color="#000000,0.133", offset=ft.Offset(0, 4)),
         )
 
     view_help = ft.Column([
