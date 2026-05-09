@@ -25,19 +25,21 @@ ENV_FILE        = ROOT / ".env"
 NOTION_CFG_FILE = ROOT / "notion_config.json"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
+# Accent family: oklch hue 324 (purple-magenta), refs: oklch(45.2% 0.211 324)
+# Warning: oklch hue 58 (amber), ref: oklch(66.6% 0.179 58)
+# Error: oklch hue 4 (rose-crimson), ref: oklch(52.5% 0.223 4)
 C_BG        = "#090915"
 C_GLASS     = "#ffffff0d"
 C_GLASS_HVR = "#ffffff18"
 C_BORDER    = "#ffffff18"
-C_ACCENT    = "#7c6af7"
-C_ACCENT2   = "#a78bfa"
-C_CYAN      = "#22d3ee"
+C_ACCENT    = "#c254cb"    # oklch(63% 0.20 324) purple-magenta
+C_ACCENT2   = "#d982df"    # oklch(73% 0.16 324) lavender
 C_SUCCESS   = "#34d399"
-C_WARNING   = "#fbbf24"
-C_ERROR     = "#f87171"
+C_WARNING   = "#e98a34"    # oklch(72% 0.15 58) warm amber — replaces saturated yellow
+C_ERROR     = "#f56691"    # oklch(70% 0.18 4) rose-red
 C_TEXT      = "#eeeeff"
-C_DIM       = "#9090b8"
-C_MUTED     = "#505070"
+C_DIM       = "#9a90b8"
+C_MUTED     = "#524868"
 
 
 # ── Data helpers ───────────────────────────────────────────────────────────────
@@ -174,13 +176,24 @@ def parse_stats(lines: list) -> dict:
     return stats
 
 
+# ── Border helpers (ft.border.all/only removed in Flet 0.85) ──────────────────
+
+def _ball(width: float, color: str) -> ft.Border:
+    s = ft.BorderSide(width, color)
+    return ft.Border(top=s, right=s, bottom=s, left=s)
+
+
+def _bonly(**sides) -> ft.Border:
+    return ft.Border(**{k: ft.BorderSide(v[0], v[1]) for k, v in sides.items()})
+
+
 # ── UI Components ──────────────────────────────────────────────────────────────
 
 def glass(content, padding=20, expand=False, margin=None, height=None):
     return ft.Container(
         content=content,
         bgcolor=C_GLASS,
-        border=ft.border.all(1, C_BORDER),
+        border=_ball(1, C_BORDER),
         border_radius=18,
         padding=padding,
         expand=expand,
@@ -206,7 +219,7 @@ def dim(text, size=13, color=C_DIM):
 def badge(label, ok, msg):
     c  = C_SUCCESS if ok else C_ERROR
     bg = C_SUCCESS + "1a" if ok else C_ERROR + "1a"
-    ic = ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED if ok else ft.icons.CANCEL_OUTLINED
+    ic = ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED if ok else ft.Icons.CANCEL_OUTLINED
     return ft.Container(
         content=ft.Column([
             ft.Row([ft.Icon(ic, color=c, size=15),
@@ -214,7 +227,7 @@ def badge(label, ok, msg):
             ft.Text(msg, color=C_DIM, size=11),
         ], spacing=3),
         bgcolor=bg,
-        border=ft.border.all(1, c + "33"),
+        border=_ball(1, c + "33"),
         border_radius=12,
         padding=14,
         expand=True,
@@ -223,7 +236,7 @@ def badge(label, ok, msg):
 
 def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
     return ft.ElevatedButton(
-        text=text, icon=icon, on_click=on_click, width=width,
+        text, icon=icon, on_click=on_click, width=width,
         style=ft.ButtonStyle(
             bgcolor=color,
             color=C_TEXT,
@@ -237,7 +250,7 @@ def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
 
 def ghost_btn(text, on_click, icon=None):
     return ft.OutlinedButton(
-        text=text, icon=icon, on_click=on_click,
+        text, icon=icon, on_click=on_click,
         style=ft.ButtonStyle(
             color=C_DIM,
             side=ft.BorderSide(1, C_BORDER),
@@ -275,7 +288,6 @@ def dropdown(label, options, value=None):
         border_radius=12,
         color=C_TEXT,
         label_style=ft.TextStyle(color=C_DIM, size=12),
-        padding=ft.padding.Padding(left=4, right=4, top=0, bottom=0),
     )
 
 
@@ -285,7 +297,28 @@ def main(page: ft.Page):
     page.title        = "Notion → Anki"
     page.bgcolor      = C_BG
     page.theme_mode   = ft.ThemeMode.DARK
-    page.theme        = ft.Theme(color_scheme_seed=C_ACCENT)
+    page.theme        = ft.Theme(
+        color_scheme=ft.ColorScheme(
+            primary=C_ACCENT,
+            primary_container=C_ACCENT + "33",
+            on_primary=C_TEXT,
+            on_primary_container=C_TEXT,
+            secondary=C_ACCENT2,
+            secondary_container=C_ACCENT2 + "22",
+            on_secondary=C_TEXT,
+            on_secondary_container=C_TEXT,
+            tertiary=C_ACCENT,             # prevent MD3 amber auto-generation
+            tertiary_container=C_GLASS,
+            on_tertiary=C_TEXT,
+            on_tertiary_container=C_TEXT,
+            surface=C_BG,
+            surface_tint=C_ACCENT,
+            on_surface=C_TEXT,
+            on_surface_variant=C_DIM,
+            error=C_ERROR,
+            on_error=C_TEXT,
+        )
+    )
     page.padding      = 0
     page.window.width      = 1120
     page.window.height     = 760
@@ -438,7 +471,7 @@ def main(page: ft.Page):
                         dim(label, size=11),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
                     bgcolor=C_GLASS,
-                    border=ft.border.all(1, C_BORDER),
+                    border=_ball(1, C_BORDER),
                     border_radius=14,
                     padding=ft.padding.Padding(left=20, right=20, top=16, bottom=16),
                     expand=True,
@@ -463,7 +496,7 @@ def main(page: ft.Page):
 
     view_sync = ft.Column([
         glass(ft.Column([
-            ft.Row([ft.Icon(ft.icons.SYNC_ROUNDED, color=C_ACCENT, size=22),
+            ft.Row([ft.Icon(ft.Icons.SYNC_ROUNDED, color=C_ACCENT, size=22),
                     h("Sincronizar")], spacing=10),
             dim("Busca itens do Notion, gera flashcards com IA e envia ao Anki."),
         ], spacing=6)),
@@ -473,8 +506,8 @@ def main(page: ft.Page):
         glass(ft.Column([
             ft.Row([
                 h("Conexões", size=14),
-                ft.Spacer(),
-                btn("Testar", on_test, icon=ft.icons.WIFI_ROUNDED),
+                ft.Container(expand=True),
+                btn("Testar", on_test, icon=ft.Icons.WIFI_ROUNDED),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Container(height=10),
             conn_row,
@@ -485,9 +518,9 @@ def main(page: ft.Page):
         glass(ft.Column([
             ft.Row([
                 h("Sincronização", size=14),
-                ft.Spacer(),
+                ft.Container(expand=True),
                 ft.IconButton(
-                    icon=ft.icons.DELETE_OUTLINE_ROUNDED,
+                    icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
                     icon_color=C_MUTED, tooltip="Limpar log",
                     on_click=on_clear,
                 ),
@@ -497,8 +530,8 @@ def main(page: ft.Page):
             progress_bar,
             ft.Container(height=4),
             ft.ElevatedButton(
+                "▶   Iniciar Sincronização",
                 ref=sync_btn_ref,
-                text="▶   Iniciar Sincronização",
                 on_click=on_sync,
                 style=ft.ButtonStyle(
                     bgcolor=C_ACCENT,
@@ -514,7 +547,7 @@ def main(page: ft.Page):
             ft.Container(
                 content=ft.Column([log_field], scroll=ft.ScrollMode.AUTO),
                 bgcolor="#ffffff08",
-                border=ft.border.all(1, C_BORDER),
+                border=_ball(1, C_BORDER),
                 border_radius=12,
                 padding=12,
                 height=210,
@@ -542,9 +575,9 @@ def main(page: ft.Page):
         return ft.Container(
             content=ft.Text(lbl, color=c, size=11, weight=ft.FontWeight.W_700,
                             text_align=ft.TextAlign.CENTER),
-            bgcolor=bg, border=ft.border.all(2, c),
+            bgcolor=bg, border=_ball(2, c),
             border_radius=20, width=32, height=32,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
         )
 
     def line(active):
@@ -580,7 +613,7 @@ def main(page: ft.Page):
                                 dim("DB pai → DB filho. Categorias com subcategorias."),
                             ], spacing=2),
                         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        bgcolor=C_GLASS, border=ft.border.all(1, C_BORDER),
+                        bgcolor=C_GLASS, border=_ball(1, C_BORDER),
                         border_radius=12, padding=14, margin=ft.margin.Margin(left=0, right=0, top=0, bottom=8),
                     ),
                     ft.Container(
@@ -591,7 +624,7 @@ def main(page: ft.Page):
                                 dim("DB único onde cada linha vira flashcards."),
                             ], spacing=2),
                         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                        bgcolor=C_GLASS, border=ft.border.all(1, C_BORDER),
+                        bgcolor=C_GLASS, border=_ball(1, C_BORDER),
                         border_radius=12, padding=14,
                     ),
                 ], spacing=0),
@@ -617,9 +650,9 @@ def main(page: ft.Page):
                 ctrls.append(ft.Container(height=12))
                 ctrls.append(glass(ft.Column([
                     ft.Row([
-                        ft.Icon(ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=C_SUCCESS, size=16),
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=C_SUCCESS, size=16),
                         ft.Text("Configuração salva", color=C_SUCCESS, size=13, weight=ft.FontWeight.W_600),
-                        ft.Spacer(),
+                        ft.Container(expand=True),
                         ghost_btn("Reconfigurar", lambda e: (
                             state.update({"setup_step": 1, "notion_dbs": None}) or rebuild()
                         )),
@@ -638,7 +671,7 @@ def main(page: ft.Page):
         elif step == 2:
             if not token:
                 ctrls.append(glass(ft.Row([
-                    ft.Icon(ft.icons.WARNING_AMBER_ROUNDED, color=C_WARNING),
+                    ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=C_WARNING),
                     ft.Text("Insira o Notion Token nas Configurações.", color=C_WARNING, size=13),
                 ], spacing=8)))
             elif state["notion_dbs"] is None:
@@ -655,7 +688,7 @@ def main(page: ft.Page):
                 dbs = state["notion_dbs"]
                 if not dbs:
                     ctrls.append(glass(ft.Row([
-                        ft.Icon(ft.icons.ERROR_ROUNDED, color=C_ERROR),
+                        ft.Icon(ft.Icons.ERROR_ROUNDED, color=C_ERROR),
                         ft.Text("Nenhum database encontrado. Verifique token e permissões.", color=C_ERROR, size=13),
                     ], spacing=8)))
                 else:
@@ -693,7 +726,7 @@ def main(page: ft.Page):
 
             if not props:
                 ctrls.append(glass(ft.Row([
-                    ft.Icon(ft.icons.ERROR_ROUNDED, color=C_ERROR),
+                    ft.Icon(ft.Icons.ERROR_ROUNDED, color=C_ERROR),
                     ft.Text("Não foi possível buscar propriedades. Verifique o token.", color=C_ERROR, size=13),
                 ], spacing=8)))
             else:
@@ -847,7 +880,7 @@ def main(page: ft.Page):
 
     view_settings = ft.Column([
         glass(ft.Column([
-            ft.Row([ft.Icon(ft.icons.SETTINGS_ROUNDED, color=C_ACCENT, size=22),
+            ft.Row([ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=C_ACCENT, size=22),
                     h("Configurações")], spacing=10),
             dim("Chaves de API e preferências de sincronização."),
         ], spacing=6)),
@@ -879,7 +912,7 @@ def main(page: ft.Page):
                    spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=4)),
         ft.Container(height=16),
-        btn("💾 Salvar configurações", on_save_cfg, icon=ft.icons.SAVE_ROUNDED),
+        btn("💾 Salvar configurações", on_save_cfg, icon=ft.Icons.SAVE_ROUNDED),
         ft.Container(height=20),
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
@@ -899,7 +932,7 @@ def main(page: ft.Page):
                                             weight=ft.FontWeight.W_700,
                                             text_align=ft.TextAlign.CENTER),
                             bgcolor=C_ACCENT + "22", border_radius=10,
-                            width=22, height=22, alignment=ft.alignment.center,
+                            width=22, height=22, alignment=ft.Alignment(0, 0),
                         ),
                         ft.Text(item, color=C_DIM, size=13, expand=True),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
@@ -907,7 +940,7 @@ def main(page: ft.Page):
                 ], spacing=8),
             ], spacing=0),
             bgcolor=C_GLASS,
-            border=ft.border.all(1, C_BORDER),
+            border=_ball(1, C_BORDER),
             border_radius=16,
             padding=20,
             margin=ft.margin.Margin(left=0, right=0, top=0, bottom=10),
@@ -917,7 +950,7 @@ def main(page: ft.Page):
 
     view_help = ft.Column([
         glass(ft.Column([
-            ft.Row([ft.Icon(ft.icons.HELP_OUTLINE_ROUNDED, color=C_ACCENT, size=22),
+            ft.Row([ft.Icon(ft.Icons.HELP_OUTLINE_ROUNDED, color=C_ACCENT, size=22),
                     h("Como usar")], spacing=10),
             dim("Guia rápido de configuração e sincronização."),
         ], spacing=6)),
@@ -979,7 +1012,7 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Text("N⚡A", size=15, weight=ft.FontWeight.W_800, color=C_ACCENT),
                     bgcolor=C_ACCENT + "22",
-                    border=ft.border.all(1, C_ACCENT + "44"),
+                    border=_ball(1, C_ACCENT + "44"),
                     border_radius=14,
                     padding=ft.padding.Padding(left=14, right=14, top=10, bottom=10),
                 ),
@@ -989,23 +1022,23 @@ def main(page: ft.Page):
         ),
         destinations=[
             ft.NavigationRailDestination(
-                icon=ft.icons.SYNC_OUTLINED,
-                selected_icon=ft.icons.SYNC_ROUNDED,
+                icon=ft.Icons.SYNC_OUTLINED,
+                selected_icon=ft.Icons.SYNC_ROUNDED,
                 label="Sync",
             ),
             ft.NavigationRailDestination(
-                icon=ft.icons.ACCOUNT_TREE_OUTLINED,
-                selected_icon=ft.icons.ACCOUNT_TREE_ROUNDED,
+                icon=ft.Icons.ACCOUNT_TREE_OUTLINED,
+                selected_icon=ft.Icons.ACCOUNT_TREE_ROUNDED,
                 label="Notion",
             ),
             ft.NavigationRailDestination(
-                icon=ft.icons.TUNE_OUTLINED,
-                selected_icon=ft.icons.TUNE_ROUNDED,
+                icon=ft.Icons.TUNE_OUTLINED,
+                selected_icon=ft.Icons.TUNE_ROUNDED,
                 label="Config",
             ),
             ft.NavigationRailDestination(
-                icon=ft.icons.HELP_OUTLINE_ROUNDED,
-                selected_icon=ft.icons.HELP_ROUNDED,
+                icon=ft.Icons.HELP_OUTLINE_ROUNDED,
+                selected_icon=ft.Icons.HELP_ROUNDED,
                 label="Ajuda",
             ),
         ],
@@ -1014,7 +1047,7 @@ def main(page: ft.Page):
 
     sidebar = ft.Container(
         content=rail,
-        border=ft.border.only(right=ft.BorderSide(1, C_BORDER)),
+        border=_bonly(right=(1, C_BORDER)),
     )
 
     page.add(
