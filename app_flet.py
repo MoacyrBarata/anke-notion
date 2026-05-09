@@ -228,7 +228,7 @@ def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
             bgcolor=color,
             color=C_TEXT,
             shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=22, vertical=13),
+            padding=ft.padding.Padding(left=22, right=22, top=13, bottom=13),
             elevation=0,
             overlay_color="#ffffff18",
         ),
@@ -242,7 +242,7 @@ def ghost_btn(text, on_click, icon=None):
             color=C_DIM,
             side=ft.BorderSide(1, C_BORDER),
             shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=18, vertical=13),
+            padding=ft.padding.Padding(left=18, right=18, top=13, bottom=13),
             overlay_color="#ffffff0d",
         ),
     )
@@ -260,7 +260,7 @@ def field(label, value="", password=False, hint="", width=None):
         focused_border_color=C_ACCENT,
         border_radius=12,
         cursor_color=C_ACCENT,
-        content_padding=ft.padding.symmetric(horizontal=14, vertical=12),
+        content_padding=ft.padding.Padding(left=14, right=14, top=12, bottom=12),
     )
 
 
@@ -275,7 +275,7 @@ def dropdown(label, options, value=None):
         border_radius=12,
         color=C_TEXT,
         label_style=ft.TextStyle(color=C_DIM, size=12),
-        padding=ft.padding.symmetric(horizontal=4),
+        padding=ft.padding.Padding(left=4, right=4, top=0, bottom=0),
     )
 
 
@@ -440,7 +440,7 @@ def main(page: ft.Page):
                     bgcolor=C_GLASS,
                     border=ft.border.all(1, C_BORDER),
                     border_radius=14,
-                    padding=ft.padding.symmetric(horizontal=20, vertical=16),
+                    padding=ft.padding.Padding(left=20, right=20, top=16, bottom=16),
                     expand=True,
                 )
 
@@ -504,7 +504,7 @@ def main(page: ft.Page):
                     bgcolor=C_ACCENT,
                     color=C_TEXT,
                     shape=ft.RoundedRectangleBorder(radius=12),
-                    padding=ft.padding.symmetric(horizontal=32, vertical=14),
+                    padding=ft.padding.Padding(left=32, right=32, top=14, bottom=14),
                     elevation=0,
                     overlay_color="#ffffff18",
                 ),
@@ -564,7 +564,7 @@ def main(page: ft.Page):
             ft.Container(height=6),
             ft.Row([dim(l, size=10) for l in ["Modo", "Database", "Campos", "Anki"]],
                    alignment=ft.MainAxisAlignment.SPACE_AROUND),
-        ], spacing=0), padding=ft.padding.symmetric(horizontal=20, vertical=14)))
+        ], spacing=0), padding=ft.padding.Padding(left=20, right=20, top=14, bottom=14)))
         ctrls.append(ft.Container(height=12))
 
         # ── Step 1 ────────────────────────────────────────────────────────────
@@ -581,7 +581,7 @@ def main(page: ft.Page):
                             ], spacing=2),
                         ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         bgcolor=C_GLASS, border=ft.border.all(1, C_BORDER),
-                        border_radius=12, padding=14, margin=ft.margin.only(bottom=8),
+                        border_radius=12, padding=14, margin=ft.margin.Margin(left=0, right=0, top=0, bottom=8),
                     ),
                     ft.Container(
                         content=ft.Row([
@@ -910,7 +910,7 @@ def main(page: ft.Page):
             border=ft.border.all(1, C_BORDER),
             border_radius=16,
             padding=20,
-            margin=ft.margin.only(bottom=10),
+            margin=ft.margin.Margin(left=0, right=0, top=0, bottom=10),
             shadow=ft.BoxShadow(spread_radius=0, blur_radius=20,
                                 color="#00000022", offset=ft.Offset(0, 4)),
         )
@@ -956,7 +956,7 @@ def main(page: ft.Page):
     content = ft.Container(
         content=view_sync,
         expand=True,
-        padding=ft.padding.only(left=28, right=28, top=24, bottom=16),
+        padding=ft.padding.Padding(left=28, right=28, top=24, bottom=16),
     )
 
     def on_nav(e):
@@ -981,11 +981,11 @@ def main(page: ft.Page):
                     bgcolor=C_ACCENT + "22",
                     border=ft.border.all(1, C_ACCENT + "44"),
                     border_radius=14,
-                    padding=ft.padding.symmetric(horizontal=14, vertical=10),
+                    padding=ft.padding.Padding(left=14, right=14, top=10, bottom=10),
                 ),
                 dim("Notion Anki", size=9, color=C_MUTED),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-            padding=ft.padding.symmetric(vertical=20),
+            padding=ft.padding.Padding(left=0, right=0, top=20, bottom=20),
         ),
         destinations=[
             ft.NavigationRailDestination(
