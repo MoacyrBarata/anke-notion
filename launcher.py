@@ -686,9 +686,6 @@ def main():
     # Launch Flet app
     _launch_flet()
 
-    if _os() == "windows":
-        input("\n  Pressione Enter para fechar...")
-
 
 def _term_fallback_install():
     """Terminal-only installation fallback (no GUI available)."""

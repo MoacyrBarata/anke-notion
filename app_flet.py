@@ -234,9 +234,9 @@ def badge(label, ok, msg):
     )
 
 
-def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
+def btn(text, on_click, icon=None, color=C_ACCENT, width=None, ref=None):
     return ft.Button(
-        text, icon=icon, on_click=on_click, width=width,
+        text, icon=icon, on_click=on_click, width=width, ref=ref,
         style=ft.ButtonStyle(
             bgcolor=color,
             color=C_TEXT,
@@ -366,19 +366,34 @@ def main(page: ft.Page):
     f_host     = field("Anki Host",          cfg.get("ANKI_HOST", "http://localhost:8765"))
     f_cards    = field("Máx. flashcards",    cfg.get("MAX_FLASHCARDS_POR_AULA", "10"), width=140)
 
+    gem_model_dd = dropdown(
+        "Modelo Gemini",
+        ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+        value=cfg.get("GEMINI_MODEL", "gemini-2.0-flash"),
+    )
+
+    _init_provider = cfg.get("AI_PROVIDER", "claude")
+    ant_key_wrap = ft.Container(content=f_ant_key, visible=(_init_provider == "claude"))
+    gem_key_wrap = ft.Container(
+        content=ft.Column([f_gem_key, ft.Container(height=8), gem_model_dd], spacing=8),
+        visible=(_init_provider == "gemini"),
+    )
+
+    def _on_provider_change(e):
+        is_gemini = e.control.value == "gemini"
+        ant_key_wrap.visible = not is_gemini
+        gem_key_wrap.visible = is_gemini
+        page.update()
+
     prov_radio = ft.RadioGroup(
-        value=cfg.get("AI_PROVIDER", "claude"),
+        value=_init_provider,
+        on_change=_on_provider_change,
         content=ft.Row([
             ft.Radio(value="claude", label="Claude", fill_color=C_ACCENT,
                      label_style=ft.TextStyle(color=C_DIM, size=13)),
             ft.Radio(value="gemini", label="Gemini", fill_color=C_ACCENT,
                      label_style=ft.TextStyle(color=C_DIM, size=13)),
         ], spacing=24),
-    )
-    gem_model_dd = dropdown(
-        "Modelo Gemini",
-        ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
-        value=cfg.get("GEMINI_MODEL", "gemini-2.0-flash"),
     )
 
     # ── Snackbar ───────────────────────────────────────────────────────────────
@@ -402,7 +417,9 @@ def main(page: ft.Page):
     progress_bar = ft.ProgressBar(visible=False, color=C_ACCENT,
                                   bgcolor=C_BORDER, height=3, border_radius=2)
     stats_row    = ft.Row(controls=[], spacing=10)
-    sync_btn_ref = ft.Ref[ft.Button]()
+    sync_btn_ref     = ft.Ref[ft.Button]()
+    test_btn_ref     = ft.Ref[ft.Button]()
+    save_cfg_btn_ref = ft.Ref[ft.Button]()
 
     def get_key_and_prov():
         p = prov_radio.value or "claude"
@@ -410,6 +427,12 @@ def main(page: ft.Page):
         return k, p
 
     def on_test(e):
+        if test_btn_ref.current:
+            test_btn_ref.current.disabled = True
+            test_btn_ref.current.content  = "Testando..."
+            test_btn_ref.current.icon     = ft.Icons.REFRESH_ROUNDED
+            page.update()
+
         def work():
             token = f_token.value or ""
             host  = f_host.value  or "http://localhost:8765"
@@ -428,6 +451,10 @@ def main(page: ft.Page):
                 badge(s["ai"][2], s["ai"][0], s["ai"][1]),
                 badge("Anki", *s["anki"]),
             ]
+            if test_btn_ref.current:
+                test_btn_ref.current.disabled = False
+                test_btn_ref.current.content  = "Testar"
+                test_btn_ref.current.icon     = ft.Icons.WIFI_ROUNDED
             page.update()
         threading.Thread(target=work, daemon=True).start()
 
@@ -443,6 +470,8 @@ def main(page: ft.Page):
         state["sync_result"]  = None
         if sync_btn_ref.current:
             sync_btn_ref.current.disabled = True
+            sync_btn_ref.current.content  = "⏳  Sincronizando..."
+            sync_btn_ref.current.icon     = None
         progress_bar.visible = True
         log_field.value      = ""
         result_text.value    = ""
@@ -471,6 +500,8 @@ def main(page: ft.Page):
             state["sync_result"]  = "success" if proc.returncode == 0 else "error"
             if sync_btn_ref.current:
                 sync_btn_ref.current.disabled = False
+                sync_btn_ref.current.content  = "▶   Iniciar Sincronização"
+                sync_btn_ref.current.icon     = None
             progress_bar.visible = False
             s = state["last_stats"]
             if state["sync_result"] == "success":
@@ -524,7 +555,7 @@ def main(page: ft.Page):
             ft.Row([
                 h("Conexões", size=14),
                 ft.Container(expand=True),
-                btn("Testar", on_test, icon=ft.Icons.WIFI_ROUNDED),
+                btn("Testar", on_test, icon=ft.Icons.WIFI_ROUNDED, ref=test_btn_ref),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Container(height=10),
             conn_row,
@@ -893,7 +924,38 @@ def main(page: ft.Page):
             "ANKI_HOST":               f_host.value,
             "MAX_FLASHCARDS_POR_AULA": f_cards.value,
         })
+
         snack("✅ Configurações salvas!")
+
+        b = save_cfg_btn_ref.current
+        if b:
+            b.content = "✓  Salvo!"
+            b.icon    = ft.Icons.CHECK_CIRCLE_ROUNDED
+            b.style   = ft.ButtonStyle(
+                bgcolor=C_SUCCESS,
+                color=C_TEXT,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.padding.Padding(left=22, right=22, top=13, bottom=13),
+                elevation=0,
+                overlay_color="#ffffff,0.094",
+            )
+            page.update()
+
+            def _restore():
+                import time as _t; _t.sleep(2)
+                if save_cfg_btn_ref.current:
+                    b.content = "💾  Salvar configurações"
+                    b.icon    = ft.Icons.SAVE_ROUNDED
+                    b.style   = ft.ButtonStyle(
+                        bgcolor=C_ACCENT,
+                        color=C_TEXT,
+                        shape=ft.RoundedRectangleBorder(radius=12),
+                        padding=ft.padding.Padding(left=22, right=22, top=13, bottom=13),
+                        elevation=0,
+                        overlay_color="#ffffff,0.094",
+                    )
+                    page.update()
+            threading.Thread(target=_restore, daemon=True).start()
 
     view_settings = ft.Column([
         glass(ft.Column([
@@ -913,11 +975,8 @@ def main(page: ft.Page):
             ft.Container(height=8),
             prov_radio,
             ft.Container(height=8),
-            f_ant_key,
-            ft.Container(height=8),
-            f_gem_key,
-            ft.Container(height=8),
-            gem_model_dd,
+            ant_key_wrap,
+            gem_key_wrap,
         ], spacing=4)),
         ft.Container(height=10),
         glass(ft.Column([
@@ -929,7 +988,7 @@ def main(page: ft.Page):
                    spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ], spacing=4)),
         ft.Container(height=16),
-        btn("💾 Salvar configurações", on_save_cfg, icon=ft.Icons.SAVE_ROUNDED),
+        btn("💾 Salvar configurações", on_save_cfg, icon=ft.Icons.SAVE_ROUNDED, ref=save_cfg_btn_ref),
         ft.Container(height=20),
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 

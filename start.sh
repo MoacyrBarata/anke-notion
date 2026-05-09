@@ -4,12 +4,11 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-# Log tudo para arquivo + terminal
+# Redirecionar saída para log (terminal oculto — sem spam visual)
 LOG="$DIR/start.log"
-exec > >(tee -a "$LOG") 2>&1
+exec > "$LOG" 2>&1
 echo "=== $(date) ==="
 echo "DIR: $DIR"
-echo "PATH: $PATH"
 
 # ── Localizar Python 3 ────────────────────────────────────────────────────────
 PY=""
@@ -23,24 +22,29 @@ for candidate in python3 python3.12 python3.11 python3.10 python; do
     fi
 done
 
-echo "Python encontrado: ${PY:-NENHUM}"
+echo "Python: ${PY:-NENHUM}"
 
 if [ -z "$PY" ]; then
-    echo "ERRO: Python 3 não encontrado."
-    echo "Instale em: https://python.org"
-    read -rp "Pressione Enter para fechar..."
+    if command -v zenity &>/dev/null; then
+        zenity --error \
+            --text="Python 3 não encontrado.\nInstale em: https://python.org" \
+            --title="Notion → Anki" 2>/dev/null &
+    elif command -v notify-send &>/dev/null; then
+        notify-send "Notion → Anki" "Python 3 não encontrado. Instale em python.org"
+    fi
     exit 1
 fi
 
+# ── Executar launcher (sem terminal visível) ──────────────────────────────────
 echo "Iniciando launcher.py..."
 "$PY" "$DIR/launcher.py"
 EXIT_CODE=$?
+echo "Encerrado com código: $EXIT_CODE"
 
-echo "launcher.py encerrou com código: $EXIT_CODE"
-
-if [ $EXIT_CODE -ne 0 ]; then
-    echo "ERRO — veja detalhes acima."
-    read -rp "Pressione Enter para fechar..."
+if [ $EXIT_CODE -ne 0 ] && command -v zenity &>/dev/null; then
+    zenity --error \
+        --text="Erro ao iniciar (código $EXIT_CODE).\nLog: $LOG" \
+        --title="Notion → Anki" 2>/dev/null &
 fi
 
 exit $EXIT_CODE
