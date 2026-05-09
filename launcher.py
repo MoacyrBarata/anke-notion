@@ -523,28 +523,102 @@ def _skip_streamlit_email_prompt():
         creds_file.write_text('[general]\nemail = ""\n', encoding="utf-8")
 
 
-def _launch_streamlit():
-    _skip_streamlit_email_prompt()
+def _wait_for_server(timeout: int = 40) -> bool:
+    """Block until Streamlit HTTP server is accepting connections."""
+    import urllib.request
+    url      = f"http://localhost:{PORT}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(url, timeout=1)
+            return True
+        except Exception:
+            time.sleep(0.25)
+    return False
 
-    url = f"http://localhost:{PORT}"
 
-    def _open():
-        time.sleep(2.8)
-        webbrowser.open(url)
-
-    threading.Thread(target=_open, daemon=True).start()
-
-    try:
-        subprocess.run([
+def _start_streamlit_headless() -> subprocess.Popen:
+    """Start Streamlit without opening a browser. Returns the process."""
+    log_file = open(ROOT / "streamlit_server.log", "w", encoding="utf-8")
+    return subprocess.Popen(
+        [
             str(_venv_python()), "-m", "streamlit", "run",
             str(ROOT / "app.py"),
             f"--server.port={PORT}",
-            "--server.headless=false",
+            "--server.headless=true",
             "--browser.gatherUsageStats=false",
             "--theme.base=dark",
-        ], cwd=str(ROOT))
+        ],
+        cwd=str(ROOT),
+        stdout=log_file,
+        stderr=log_file,
+    )
+
+
+def _launch_webview(proc: subprocess.Popen) -> bool:
+    """
+    Show Streamlit inside a native pywebview window.
+    Returns False if pywebview unavailable or fails (caller falls back to browser).
+    """
+    try:
+        import webview
+    except ImportError:
+        return False
+
+    try:
+        window = webview.create_window(
+            title            = "Notion → Anki Sync",
+            url              = f"http://localhost:{PORT}",
+            width            = 1220,
+            height           = 840,
+            min_size         = (900, 620),
+            resizable        = True,
+            background_color = "#0d0d1a",
+            text_select      = True,
+        )
+
+        gui_backend = "edgechromium" if _os() == "windows" else None
+        kwargs = {"gui": gui_backend} if gui_backend else {}
+        webview.start(**kwargs)
+        return True
+
+    except Exception as e:
+        print(f"\n  {_yellow('Webview indisponivel:')} {e}")
+        return False
+
+
+def _launch_streamlit():
+    _skip_streamlit_email_prompt()
+
+    proc = _start_streamlit_headless()
+
+    print(f"  {_dim('Iniciando servidor...')}", end="", flush=True)
+
+    if not _wait_for_server(timeout=40):
+        print(f"\r  {_yellow('!')} Servidor nao respondeu. Veja streamlit_server.log")
+        proc.terminate()
+        return
+
+    print(f"\r  {_green('v')} Servidor pronto.              ")
+
+    try:
+        launched = _launch_webview(proc)
+
+        if not launched:
+            url = f"http://localhost:{PORT}"
+            print(f"  {_green('>')} Abrindo no navegador: {_bold(url)}")
+            webbrowser.open(url)
+            print(f"  {_dim('Pressione Ctrl+C para encerrar.')}\n")
+            proc.wait()
+
     except KeyboardInterrupt:
-        pass
+        print(f"\n  {_yellow('Encerrado.')}")
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
 
 
 # ─────────────────────────────────────────────────────────

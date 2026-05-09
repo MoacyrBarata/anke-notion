@@ -42,8 +42,10 @@ O app roda em Python. Se não tiver instalado:
 
 **Linux (Ubuntu/Debian)**
 ```bash
-sudo apt update && sudo apt install python3 python3-venv python3-pip
+sudo apt update && sudo apt install python3 python3-venv python3-pip \
+  python3-gi python3-gi-cairo gir1.2-webkit2-4.0
 ```
+> O pacote `gir1.2-webkit2-4.0` é necessário para a janela nativa do app funcionar no Linux.
 
 > ⚠️ **Windows — problema comum:** se `python --version` não funcionar após a instalação,
 > reinicie o computador. Se continuar sem funcionar, reabra o instalador do Python,
