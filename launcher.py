@@ -183,8 +183,11 @@ def _bootstrap_customtkinter():
 def _reexec_from_venv():
     """Re-exec this script using venv Python (inherits terminal/window)."""
     vp = _venv_python()
-    result = subprocess.run([str(vp), str(ROOT / "launcher.py")] + sys.argv[1:])
-    sys.exit(result.returncode)
+    try:
+        result = subprocess.run([str(vp), str(ROOT / "launcher.py")] + sys.argv[1:])
+        sys.exit(result.returncode)
+    except KeyboardInterrupt:
+        sys.exit(0)
 
 
 # ─────────────────────────────────────────────────────────
@@ -387,36 +390,49 @@ class InstallerWindow:
     def _on_close(self):
         self._launch_after_close = False
         self._done.set()
-        self.win.destroy()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
     # ── Thread-safe UI update via queue ──────────────────────────────────
 
     def _poll(self):
-        with self._lock:
-            items = list(self._queue)
-            self._queue.clear()
+        try:
+            with self._lock:
+                items = list(self._queue)
+                self._queue.clear()
 
-        for item in items:
-            cmd, *args = item
-            if cmd == "progress":
-                self._prog.set(args[0])
-            elif cmd == "status":
-                self._status.configure(text=args[0])
-            elif cmd == "subtitle":
-                self._subtitle.configure(text=args[0])
-            elif cmd == "log":
-                self._log.configure(state="normal")
-                self._log.insert("end", args[0] + "\n")
-                self._log.see("end")
-                self._log.configure(state="disabled")
-            elif cmd == "done":
-                self._prog.set(1.0)
-                self._status.configure(text=args[0], text_color="#10b981")
-                self._subtitle.configure(text="Pronto! Abrindo aplicativo...")
-                self.win.after(1600, self.win.destroy)
+            for item in items:
+                cmd, *args = item
+                if cmd == "progress":
+                    self._prog.set(args[0])
+                elif cmd == "status":
+                    self._status.configure(text=args[0])
+                elif cmd == "subtitle":
+                    self._subtitle.configure(text=args[0])
+                elif cmd == "log":
+                    self._log.configure(state="normal")
+                    self._log.insert("end", args[0] + "\n")
+                    self._log.see("end")
+                    self._log.configure(state="disabled")
+                elif cmd == "done":
+                    self._prog.set(1.0)
+                    self._status.configure(text=args[0], text_color="#10b981")
+                    self._subtitle.configure(text="Pronto! Abrindo aplicativo...")
+                    self._done.set()
+                    self.win.after(1600, self._destroy_window)
 
-        if not self._done.is_set():
-            self.win.after(50, self._poll)
+            if not self._done.is_set():
+                self.win.after(50, self._poll)
+        except Exception:
+            pass  # window already destroyed — ignore stale callbacks
+
+    def _destroy_window(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
     def _push(self, *args):
         with self._lock:

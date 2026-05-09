@@ -238,7 +238,7 @@ def test_on_sync_snacks_when_no_notion_config(page, monkeypatch):
     # ElevatedButton is controls[2] (progress=1, container=2? let's find by type)
     sync_btn = None
     for ctrl in sync_col.controls:
-        if isinstance(ctrl, ft.ElevatedButton):
+        if isinstance(ctrl, ft.Button):
             sync_btn = ctrl
             break
 
@@ -274,7 +274,7 @@ def test_on_test_updates_conn_row(page, monkeypatch):
     conn_glass = view_sync.controls[2]  # connection card
     conn_col = conn_glass.content
     test_header_row = conn_col.controls[0]
-    test_btn = test_header_row.controls[2]  # ft.ElevatedButton "Testar"
+    test_btn = test_header_row.controls[2]  # ft.Button "Testar"
 
     test_btn.on_click(MagicMock())
 
@@ -337,7 +337,7 @@ def test_snack_sets_snack_bar(page):
     # Find save button
     save_btn = None
     for ctrl in settings_view.controls:
-        if isinstance(ctrl, ft.ElevatedButton):
+        if isinstance(ctrl, ft.Button):
             save_btn = ctrl
             break
 

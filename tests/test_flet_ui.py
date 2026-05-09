@@ -173,7 +173,7 @@ class TestBadge:
 
 class TestBtn:
     def test_returns_elevated_button(self):
-        assert isinstance(app_flet.btn("Save", on_click=lambda e: None), ft.ElevatedButton)
+        assert isinstance(app_flet.btn("Save", on_click=lambda e: None), ft.Button)
 
     def test_content_is_text(self):
         b = app_flet.btn("Save", on_click=lambda e: None)

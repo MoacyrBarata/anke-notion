@@ -6,10 +6,11 @@ import sys
 import pytest
 from unittest.mock import MagicMock
 
-# Patch ft.app before any test file can import app_flet,
+# Patch ft.app and ft.run before any test file can import app_flet,
 # preventing a GUI window from launching during the test session.
 import flet as _ft
 _ft.app = MagicMock()
+_ft.run = MagicMock()
 
 
 class _FakeSessionState:

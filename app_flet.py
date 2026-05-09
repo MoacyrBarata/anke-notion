@@ -235,7 +235,7 @@ def badge(label, ok, msg):
 
 
 def btn(text, on_click, icon=None, color=C_ACCENT, width=None):
-    return ft.ElevatedButton(
+    return ft.Button(
         text, icon=icon, on_click=on_click, width=width,
         style=ft.ButtonStyle(
             bgcolor=color,
@@ -294,32 +294,34 @@ def dropdown(label, options, value=None):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main(page: ft.Page):
-    page.title        = "Notion → Anki"
-    page.bgcolor      = C_BG
-    page.theme_mode   = ft.ThemeMode.DARK
-    page.theme        = ft.Theme(
-        color_scheme=ft.ColorScheme(
-            primary=C_ACCENT,
-            primary_container=C_ACCENT + "33",
-            on_primary=C_TEXT,
-            on_primary_container=C_TEXT,
-            secondary=C_ACCENT2,
-            secondary_container=C_ACCENT2 + "22",
-            on_secondary=C_TEXT,
-            on_secondary_container=C_TEXT,
-            tertiary=C_ACCENT,             # prevent MD3 amber auto-generation
-            tertiary_container=C_GLASS,
-            on_tertiary=C_TEXT,
-            on_tertiary_container=C_TEXT,
-            surface=C_BG,
-            surface_tint=C_ACCENT,
-            on_surface=C_TEXT,
-            on_surface_variant=C_DIM,
-            error=C_ERROR,
-            on_error=C_TEXT,
-        )
+    page.title      = "Notion → Anki"
+    page.bgcolor    = C_BG
+    page.theme_mode = ft.ThemeMode.DARK   # force dark regardless of Windows setting
+
+    _cs = ft.ColorScheme(
+        primary=C_ACCENT,
+        primary_container=C_ACCENT + "33",
+        on_primary=C_TEXT,
+        on_primary_container=C_TEXT,
+        secondary=C_ACCENT2,
+        secondary_container=C_ACCENT2 + "22",
+        on_secondary=C_TEXT,
+        on_secondary_container=C_TEXT,
+        tertiary=C_ACCENT,          # lock tertiary = same purple; prevents MD3 amber bleed
+        tertiary_container=C_GLASS,
+        on_tertiary=C_TEXT,
+        on_tertiary_container=C_TEXT,
+        surface=C_BG,
+        surface_tint=C_ACCENT,
+        on_surface=C_TEXT,
+        on_surface_variant=C_DIM,
+        error=C_ERROR,
+        on_error=C_TEXT,
     )
-    page.padding      = 0
+    _theme      = ft.Theme(color_scheme=_cs)
+    page.theme      = _theme   # light theme (fallback)
+    page.dark_theme = _theme   # dark theme — used when theme_mode=DARK
+    page.padding    = 0
     page.window.width      = 1120
     page.window.height     = 760
     page.window.min_width  = 820
@@ -385,7 +387,7 @@ def main(page: ft.Page):
     progress_bar = ft.ProgressBar(visible=False, color=C_ACCENT,
                                   bgcolor=C_BORDER, height=3, border_radius=2)
     stats_row    = ft.Row(controls=[], spacing=10)
-    sync_btn_ref = ft.Ref[ft.ElevatedButton]()
+    sync_btn_ref = ft.Ref[ft.Button]()
 
     def get_key_and_prov():
         p = prov_radio.value or "claude"
@@ -529,7 +531,7 @@ def main(page: ft.Page):
             ft.Container(height=10),
             progress_bar,
             ft.Container(height=4),
-            ft.ElevatedButton(
+            ft.Button(
                 "▶   Iniciar Sincronização",
                 ref=sync_btn_ref,
                 on_click=on_sync,
@@ -1056,4 +1058,4 @@ def main(page: ft.Page):
     page.update()
 
 
-ft.app(target=main)
+ft.run(main)
