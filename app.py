@@ -224,13 +224,29 @@ html, body, [class*="css"] {
 }
 
 /* ── Hide Streamlit chrome ── */
-[data-testid="stHeader"],
 [data-testid="stToolbar"],
 [data-testid="stDecoration"],
 #MainMenu,
 footer {
     display: none !important;
     height: 0 !important;
+}
+
+/* Header: transparente e sem altura — mas NÃO display:none para não engolir
+   o botão de reabrir sidebar (stSidebarCollapsedControl) */
+[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+}
+
+/* Garante que o botão de reabrir sidebar sempre aparece */
+[data-testid="stSidebarCollapsedControl"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 9999 !important;
 }
 
 /* ── Block container ── */
