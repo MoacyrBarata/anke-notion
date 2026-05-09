@@ -587,7 +587,7 @@ def main(page: ft.Page):
         done   = n < state["setup_step"]
         active = n == state["setup_step"]
         c   = C_SUCCESS if done else (C_ACCENT if active else C_MUTED)
-        bg  = C_SUCCESS + "22" if done else (C_ACCENT + "22" if active else C_GLASS)
+        bg  = f"{C_SUCCESS},0.133" if done else (f"{C_ACCENT},0.133" if active else C_GLASS)
         lbl = "✓" if done else str(n)
         return ft.Container(
             content=ft.Text(lbl, color=c, size=11, weight=ft.FontWeight.W_700,
@@ -948,7 +948,7 @@ def main(page: ft.Page):
                             content=ft.Text(str(i + 1), color=C_ACCENT, size=10,
                                             weight=ft.FontWeight.W_700,
                                             text_align=ft.TextAlign.CENTER),
-                            bgcolor=C_ACCENT + "22", border_radius=10,
+                            bgcolor=f"{C_ACCENT},0.133", border_radius=10,
                             width=22, height=22, alignment=ft.Alignment(0, 0),
                         ),
                         ft.Text(item, color=C_DIM, size=13, expand=True),
@@ -1022,14 +1022,14 @@ def main(page: ft.Page):
         min_width=88,
         group_alignment=-0.9,
         bgcolor=C_GLASS,
-        indicator_color=C_ACCENT + "2a",
+        indicator_color=f"{C_ACCENT},0.165",
         indicator_shape=ft.RoundedRectangleBorder(radius=12),
         leading=ft.Container(
             content=ft.Column([
                 ft.Container(
                     content=ft.Text("N⚡A", size=15, weight=ft.FontWeight.W_800, color=C_ACCENT),
-                    bgcolor=C_ACCENT + "22",
-                    border=_ball(1, C_ACCENT + "44"),
+                    bgcolor=f"{C_ACCENT},0.133",
+                    border=_ball(1, f"{C_ACCENT},0.267"),
                     border_radius=14,
                     padding=ft.padding.Padding(left=14, right=14, top=10, bottom=10),
                 ),
