@@ -106,24 +106,33 @@ def check_ai_key(provider: str, key: str):
     return ok, "Formato válido" if ok else "Esperado: AIza..."
 
 
-def list_notion_databases(token: str) -> list:
-    if not NOTION_CLIENT_AVAILABLE or not token:
-        return []
+def list_notion_databases(token: str):
+    """Returns (list_of_dbs, error_msg). error_msg is None on success."""
+    if not NOTION_CLIENT_AVAILABLE:
+        return [], "notion-client não instalado"
+    if not token:
+        return [], "Token não informado"
     try:
         client = NotionClient(auth=token)
         results, cursor = [], None
         while True:
-            kwargs = {"filter": {"property": "object", "value": "database"}}
+            kwargs = {"filter": {"property": "object", "value": "database"},
+                      "page_size": 100}
             if cursor:
                 kwargs["start_cursor"] = cursor
             resp = client.search(**kwargs)
-            results.extend(resp["results"])
-            if not resp["has_more"]:
+            results.extend(resp.get("results", []))
+            if not resp.get("has_more"):
                 break
-            cursor = resp["next_cursor"]
-        return results
-    except Exception:
-        return []
+            cursor = resp.get("next_cursor")
+        return results, None
+    except Exception as exc:
+        msg = str(exc)
+        if "401" in msg or "unauthorized" in msg.lower():
+            return [], "Token inválido ou expirado (401)"
+        if "403" in msg or "forbidden" in msg.lower():
+            return [], "Sem permissão (403) — verifique o token"
+        return [], f"Erro: {msg[:120]}"
 
 
 def get_database_properties(token: str, db_id: str) -> dict:
@@ -352,6 +361,7 @@ def main(page: ft.Page):
         sync_running=False,
         sync_result=None,
         notion_dbs=None,
+        notion_dbs_err=None,
         setup_step=1,
         setup_mode="hierarchical",
         setup_parent_db_id=None,
@@ -702,7 +712,7 @@ def main(page: ft.Page):
                         ft.Text("Configuração salva", color=C_SUCCESS, size=13, weight=ft.FontWeight.W_600),
                         ft.Container(expand=True),
                         ghost_btn("Reconfigurar", lambda e: (
-                            state.update({"setup_step": 1, "notion_dbs": None}) or rebuild()
+                            state.update({"setup_step": 1, "notion_dbs": None, "notion_dbs_err": None}) or rebuild()
                         )),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
@@ -724,7 +734,9 @@ def main(page: ft.Page):
                 ], spacing=8)))
             elif state["notion_dbs"] is None:
                 def load_dbs():
-                    state["notion_dbs"] = list_notion_databases(token)
+                    dbs, err = list_notion_databases(token)
+                    state["notion_dbs"]     = dbs
+                    state["notion_dbs_err"] = err
                     rebuild()
                     page.update()
                 threading.Thread(target=load_dbs, daemon=True).start()
@@ -734,11 +746,24 @@ def main(page: ft.Page):
                 ], spacing=12)))
             else:
                 dbs = state["notion_dbs"]
-                if not dbs:
-                    ctrls.append(glass(ft.Row([
-                        ft.Icon(ft.Icons.ERROR_ROUNDED, color=C_ERROR),
-                        ft.Text("Nenhum database encontrado. Verifique token e permissões.", color=C_ERROR, size=13),
-                    ], spacing=8)))
+                err = state.get("notion_dbs_err")
+                if err:
+                    ctrls.append(glass(ft.Column([
+                        ft.Row([ft.Icon(ft.Icons.ERROR_ROUNDED, color=C_ERROR),
+                                ft.Text(err, color=C_ERROR, size=13)], spacing=8),
+                        ft.Container(height=6),
+                        dim("Verifique se o token está correto e se os databases foram "
+                            "conectados à integração: abra o database no Notion → ··· → "
+                            "Conexões → selecione sua integração.", size=12),
+                    ], spacing=0)))
+                elif not dbs:
+                    ctrls.append(glass(ft.Column([
+                        ft.Row([ft.Icon(ft.Icons.INFO_ROUNDED, color=C_WARNING),
+                                ft.Text("Nenhum database encontrado.", color=C_WARNING, size=13)], spacing=8),
+                        ft.Container(height=6),
+                        dim("Os databases precisam ser conectados à integração: abra cada "
+                            "database no Notion → ··· → Conexões → selecione sua integração.", size=12),
+                    ], spacing=0)))
                 else:
                     opts   = {get_db_title(d): d["id"] for d in dbs}
                     labels = list(opts.keys())
@@ -884,8 +909,9 @@ def main(page: ft.Page):
                     "anki_deck_root":        f_deck.value or "Notion::Sync",
                     "last_sync_time":        ex.get("last_sync_time") if ex else None,
                 })
-                state["setup_step"] = 1
-                state["notion_dbs"] = None
+                state["setup_step"]     = 1
+                state["notion_dbs"]     = None
+                state["notion_dbs_err"] = None
                 snack("✅ Configuração salva! Vá para Sincronizar.")
                 rebuild()
 

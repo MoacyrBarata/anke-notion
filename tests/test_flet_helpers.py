@@ -331,12 +331,12 @@ def test_run_sync_uses_pipe(monkeypatch):
 
 def test_list_notion_databases_returns_empty_without_token(monkeypatch):
     monkeypatch.setattr(app_flet, "NOTION_CLIENT_AVAILABLE", True)
-    assert app_flet.list_notion_databases("") == []
+    dbs, err = app_flet.list_notion_databases(""); assert dbs == [] and err is not None
 
 
 def test_list_notion_databases_returns_empty_when_client_unavailable(monkeypatch):
     monkeypatch.setattr(app_flet, "NOTION_CLIENT_AVAILABLE", False)
-    assert app_flet.list_notion_databases("secret_tok") == []
+    dbs, err = app_flet.list_notion_databases("secret_tok"); assert dbs == [] and err is not None
 
 
 def test_list_notion_databases_returns_results(monkeypatch):
@@ -347,8 +347,8 @@ def test_list_notion_databases_returns_results(monkeypatch):
         "has_more": False,
     }
     monkeypatch.setattr("app_flet.NotionClient", lambda **kw: fake_client)
-    result = app_flet.list_notion_databases("secret_tok")
-    assert len(result) == 2
+    result, err = app_flet.list_notion_databases("secret_tok")
+    assert len(result) == 2 and err is None
 
 
 def test_list_notion_databases_handles_exception(monkeypatch):
@@ -358,7 +358,7 @@ def test_list_notion_databases_handles_exception(monkeypatch):
         raise RuntimeError("API down")
 
     monkeypatch.setattr("app_flet.NotionClient", boom)
-    assert app_flet.list_notion_databases("secret_tok") == []
+    dbs, err = app_flet.list_notion_databases("secret_tok"); assert dbs == [] and err is not None
 
 
 def test_get_database_properties_empty_without_token(monkeypatch):
