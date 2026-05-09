@@ -1,5 +1,7 @@
 # Environment
 .env
+notion_config.json
+icon.png
 *.env
 .env.*
 !env.example

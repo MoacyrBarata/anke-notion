@@ -2,29 +2,20 @@
 """
 notion_anki_sync.py
 ====================
-Automação: Notion (Aulas) → IA (Claude ou Gemini) → Anki
+Automação: Notion → IA (Claude ou Gemini) → Anki
 
 Fluxo:
-1. Lê o 📚 Banco de Disciplinas no Notion
-2. Para cada disciplina, busca o banco "Aulas — Anotações por Dia"
-3. Filtra aulas com conteúdo e ainda não sincronizadas
-4. Envia o conteúdo para a IA configurada gerar flashcards inteligentes
-5. Cria as notas no Anki via AnkiConnect
-6. Atualiza o campo "Sincronização" da aula no Notion
+1. Lê configuração de notion_config.json (gerado pelo app.py)
+2. Para cada DB configurado, busca páginas não sincronizadas
+3. Envia conteúdo para IA gerar flashcards
+4. Cria notas no Anki via AnkiConnect
+5. Marca páginas como sincronizadas e salva timestamp
 
 Requisitos (Claude):
     pip install notion-client anthropic requests python-dotenv
 
 Requisitos (Gemini):
     pip install notion-client google-genai requests python-dotenv
-
-Configuração (.env):
-    NOTION_TOKEN=secret_...
-    AI_PROVIDER=claude          # ou gemini
-    ANTHROPIC_API_KEY=sk-ant-...
-    GEMINI_API_KEY=AIza...
-    GEMINI_MODEL=gemini-2.0-flash
-    ANKI_HOST=http://localhost:8765   (padrão)
 """
 
 import os
@@ -32,7 +23,8 @@ import json
 import time
 import logging
 import requests
-from datetime import date
+from datetime import datetime, timezone
+from pathlib import Path
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 
@@ -64,6 +56,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+ROOT              = Path(__file__).parent
+NOTION_CONFIG_FILE = ROOT / "notion_config.json"
+
 NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY")
@@ -71,15 +66,23 @@ GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 AI_PROVIDER       = os.getenv("AI_PROVIDER", "claude").lower()
 ANKI_HOST         = os.getenv("ANKI_HOST", "http://localhost:8765")
 
-# IDs do seu Notion (já mapeados automaticamente)
-BANCO_DISCIPLINAS_DB = "ceab689d-5373-49f8-8edd-99836cd3aee6"   # 📚 Banco de Disciplinas
-AULAS_DB_PROPERTY    = "Aulas — Anotações por Dia"               # nome do banco interno
-
-# Quantos flashcards gerar por aula (a IA pode gerar menos se o conteúdo for curto)
 MAX_FLASHCARDS_POR_AULA = int(os.getenv("MAX_FLASHCARDS_POR_AULA", "10"))
 
-# Deck raiz no Anki — subdecks serão criados por disciplina
-ANKI_DECK_RAIZ = "Estudo::Concurso"
+
+# ──────────────────────────────────────────────
+# Config Notion (notion_config.json)
+# ──────────────────────────────────────────────
+
+def load_notion_config() -> dict | None:
+    if NOTION_CONFIG_FILE.exists():
+        with open(NOTION_CONFIG_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def save_notion_config(cfg: dict):
+    with open(NOTION_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
 # ──────────────────────────────────────────────
@@ -99,186 +102,145 @@ else:
 
 
 # ──────────────────────────────────────────────
-# Helpers — Notion
+# Helpers — Notion (genérico)
 # ──────────────────────────────────────────────
 
-def get_all_disciplinas() -> list[dict]:
-    """Retorna todas as páginas do 📚 Banco de Disciplinas."""
+def query_database_all(db_id: str, filter_obj: dict | None = None) -> list[dict]:
+    """Pagina todas as results de um database."""
     results = []
     cursor  = None
     while True:
-        resp = notion.data_sources.query(
-            BANCO_DISCIPLINAS_DB,
-            start_cursor=cursor,
-        )
+        kwargs = {"start_cursor": cursor} if cursor else {}
+        if filter_obj:
+            kwargs["filter"] = filter_obj
+        resp = notion.databases.query(db_id, **kwargs)
         results.extend(resp["results"])
         if not resp["has_more"]:
             break
         cursor = resp["next_cursor"]
-    log.info(f"Disciplinas encontradas: {len(results)}")
     return results
 
 
-def get_nome_disciplina(page: dict) -> str:
-    """Extrai o nome da disciplina da página."""
+def get_title_value(page: dict, prop_name: str) -> str:
+    """Extrai texto de propriedade title ou rich_text."""
     try:
-        return page["properties"]["Disciplina"]["title"][0]["plain_text"]
+        prop = page["properties"][prop_name]
+        if prop["type"] == "title":
+            items = prop["title"]
+        elif prop["type"] == "rich_text":
+            items = prop["rich_text"]
+        else:
+            return ""
+        return "".join(r["plain_text"] for r in items).strip()
     except (KeyError, IndexError):
-        return "Disciplina Desconhecida"
+        return ""
 
 
-def find_aulas_db_id(disciplina_page_id: str) -> str | None:
-    """
-    Busca o banco 'Aulas — Anotações por Dia' dentro da página da disciplina.
-    Retorna o database_id ou None se não encontrar.
-    """
+def get_select_value(page: dict, prop_name: str) -> str:
     try:
-        children = notion.blocks.children.list(block_id=disciplina_page_id)
-        for block in children["results"]:
-            if block["type"] == "child_database":
-                title = block["child_database"].get("title", "")
-                if "Aulas" in title or "Anotações" in title:
-                    return block["id"]
-    except Exception as e:
-        log.warning(f"Erro ao buscar banco de aulas em {disciplina_page_id}: {e}")
-    return None
+        return page["properties"][prop_name]["select"]["name"] or ""
+    except (KeyError, TypeError):
+        return ""
 
 
-def get_aulas_pendentes(aulas_db_id: str) -> list[dict]:
-    """
-    Retorna aulas com:
-    - Conteúdo Resumido preenchido OU conteúdo interno (verificado depois)
-    - Sincronização != "✅ Sincronizado"
-    - Status == "✅ Completa" (anotação finalizada)
-    """
-    results = []
-    cursor  = None
-    while True:
-        resp = notion.data_sources.query(
-            aulas_db_id,
-            filter={
-                "and": [
-                    {
-                        "property": "Sincronização",
-                        "select": {"does_not_equal": "✅ Sincronizado"},
-                    },
-                    {
-                        "property": "Status",
-                        "select": {"equals": "✅ Completa"},
-                    },
-                ]
-            },
-            start_cursor=cursor,
-        )
-        results.extend(resp["results"])
-        if not resp["has_more"]:
-            break
-        cursor = resp["next_cursor"]
-    return results
-
-
-def get_conteudo_aula(aula_page: dict) -> str:
-    """
-    Monta o conteúdo textual completo da aula:
-    1. Campo "Conteúdo Resumido" (propriedade)
-    2. Blocos de texto dentro da página
-    """
-    partes = []
-
-    # 1. Propriedade "Conteúdo Resumido"
+def get_date_value(page: dict, prop_name: str) -> str:
     try:
-        resumo = aula_page["properties"]["Conteúdo Resumido"]["rich_text"]
-        if resumo:
-            texto = "".join(r["plain_text"] for r in resumo)
-            if texto.strip():
-                partes.append(f"[Resumo]\n{texto.strip()}")
-    except KeyError:
-        pass
+        return page["properties"][prop_name]["date"]["start"] or ""
+    except (KeyError, TypeError):
+        return ""
 
-    # 2. Conteúdo dos blocos internos da página
+
+def get_rich_text_value(page: dict, prop_name: str) -> str:
     try:
-        blocos = notion.blocks.children.list(block_id=aula_page["id"])
-        textos_blocos = extrair_texto_blocos(blocos["results"])
-        if textos_blocos.strip():
-            partes.append(f"[Anotações]\n{textos_blocos.strip()}")
-    except Exception as e:
-        log.warning(f"Erro ao ler blocos da aula {aula_page['id']}: {e}")
-
-    return "\n\n".join(partes)
+        items = page["properties"][prop_name]["rich_text"]
+        return "".join(r["plain_text"] for r in items).strip()
+    except (KeyError, TypeError):
+        return ""
 
 
 def extrair_texto_blocos(blocos: list, nivel: int = 0) -> str:
-    """Extrai texto recursivamente de blocos Notion."""
     linhas = []
     indent = "  " * nivel
-
     for bloco in blocos:
-        tipo = bloco["type"]
+        tipo  = bloco["type"]
         texto = ""
-
-        # Tipos com rich_text
         if tipo in ("paragraph", "bulleted_list_item", "numbered_list_item",
                     "toggle", "quote", "callout"):
-            rich = bloco[tipo].get("rich_text", [])
+            rich  = bloco[tipo].get("rich_text", [])
             texto = "".join(r["plain_text"] for r in rich)
-
         elif tipo in ("heading_1", "heading_2", "heading_3"):
             rich  = bloco[tipo].get("rich_text", [])
             texto = "## " + "".join(r["plain_text"] for r in rich)
-
         elif tipo == "code":
             rich  = bloco["code"].get("rich_text", [])
             texto = "```\n" + "".join(r["plain_text"] for r in rich) + "\n```"
-
         elif tipo == "divider":
             texto = "---"
-
         if texto.strip():
             linhas.append(f"{indent}{texto}")
-
-        # Filhos recursivos (toggles, listas aninhadas)
         if bloco.get("has_children"):
             try:
                 filhos = notion.blocks.children.list(block_id=bloco["id"])
                 linhas.append(extrair_texto_blocos(filhos["results"], nivel + 1))
             except Exception:
                 pass
-
     return "\n".join(linhas)
 
 
-def get_titulo_aula(aula_page: dict) -> str:
+def get_page_content(page_id: str) -> str:
+    """Extrai conteúdo textual de blocos internos de uma página."""
     try:
-        return aula_page["properties"]["Aula"]["title"][0]["plain_text"]
-    except (KeyError, IndexError):
-        return "Aula sem título"
-
-
-def get_data_aula(aula_page: dict) -> str:
-    try:
-        return aula_page["properties"]["Data"]["date"]["start"] or ""
-    except (KeyError, TypeError):
+        blocos = notion.blocks.children.list(block_id=page_id)
+        texto  = extrair_texto_blocos(blocos["results"])
+        return texto.strip()
+    except Exception as e:
+        log.warning(f"Erro ao ler blocos de {page_id}: {e}")
         return ""
 
 
-def marcar_sincronizado(aula_page_id: str, status: str = "✅ Sincronizado"):
-    """Atualiza o campo Sincronização da aula no Notion."""
+def find_child_database(page_id: str, keyword: str) -> str | None:
+    """Busca child_database cujo título contenha keyword."""
+    try:
+        children = notion.blocks.children.list(block_id=page_id)
+        for block in children["results"]:
+            if block["type"] == "child_database":
+                title = block["child_database"].get("title", "")
+                if keyword.lower() in title.lower():
+                    return block["id"]
+    except Exception as e:
+        log.warning(f"Erro ao buscar child DB em {page_id}: {e}")
+    return None
+
+
+def marcar_sincronizado(page_id: str, prop_name: str, valor: str):
     notion.pages.update(
-        page_id=aula_page_id,
-        properties={
-            "Sincronização": {
-                "select": {"name": status}
-            }
-        }
+        page_id=page_id,
+        properties={prop_name: {"select": {"name": valor}}},
     )
 
 
+def is_newer_than(page: dict, iso_timestamp: str | None) -> bool:
+    """Retorna True se page foi editada após iso_timestamp."""
+    if not iso_timestamp:
+        return True
+    try:
+        page_time = datetime.fromisoformat(
+            page["last_edited_time"].replace("Z", "+00:00")
+        )
+        ref_time = datetime.fromisoformat(iso_timestamp)
+        if ref_time.tzinfo is None:
+            ref_time = ref_time.replace(tzinfo=timezone.utc)
+        return page_time > ref_time
+    except Exception:
+        return True
+
+
 # ──────────────────────────────────────────────
-# Helpers — Claude AI
+# Helpers — IA
 # ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Você é um especialista em criação de flashcards para estudos de concurso público.
-Seu objetivo é transformar anotações de aula em flashcards eficientes para revisão no Anki.
+SYSTEM_PROMPT = """Você é um especialista em criação de flashcards para estudos.
+Seu objetivo é transformar anotações em flashcards eficientes para revisão no Anki.
 
 Regras para gerar bons flashcards:
 - Cada flashcard deve testar UM conceito específico
@@ -286,9 +248,6 @@ Regras para gerar bons flashcards:
 - O verso (back) deve ser conciso, claro e completo
 - Priorize: definições, leis/normas, fórmulas, comparações, exceções, exemplos-chave
 - Evite flashcards muito genéricos ou com respostas longas demais
-- Para conteúdo contábil: foque em lançamentos, demonstrações, critérios de avaliação
-- Para conteúdo jurídico: foque em artigos, princípios, conceitos, distinções
-- Para conteúdo de gestão: foque em conceitos, autores, teorias, funções
 
 Retorne SOMENTE um array JSON válido, sem markdown, sem explicações, apenas o JSON:
 [
@@ -298,28 +257,25 @@ Retorne SOMENTE um array JSON válido, sem markdown, sem explicações, apenas o
 
 
 def gerar_flashcards(
-    disciplina: str,
-    titulo_aula: str,
-    data_aula: str,
+    categoria: str,
+    titulo: str,
+    data: str,
     conteudo: str,
-    max_cards: int = MAX_FLASHCARDS_POR_AULA
+    max_cards: int = MAX_FLASHCARDS_POR_AULA,
 ) -> list[dict]:
-    """Envia o conteúdo da aula para a IA configurada e retorna lista de flashcards."""
+    prompt = f"""Categoria: {categoria}
+Título: {titulo}
+Data: {data}
 
-    prompt = f"""Disciplina: {disciplina}
-Aula: {titulo_aula}
-Data: {data_aula}
-
-Conteúdo das anotações:
+Conteúdo:
 ---
 {conteudo}
 ---
 
-Gere até {max_cards} flashcards com base nesse conteúdo.
-Lembre: retorne SOMENTE o array JSON, sem nenhum texto adicional."""
+Gere até {max_cards} flashcards. Retorne SOMENTE o array JSON."""
 
     provider_label = "Gemini" if AI_PROVIDER == "gemini" else "Claude"
-    log.info(f"  → Enviando para {provider_label}: {len(conteudo)} caracteres de conteúdo")
+    log.info(f"  → Enviando para {provider_label}: {len(conteudo)} caracteres")
 
     raw = ""
     try:
@@ -342,7 +298,6 @@ Lembre: retorne SOMENTE o array JSON, sem nenhum texto adicional."""
             )
             raw = resp.content[0].text.strip()
 
-        # Remove possíveis cercas de markdown
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -353,7 +308,7 @@ Lembre: retorne SOMENTE o array JSON, sem nenhum texto adicional."""
         return flashcards
 
     except json.JSONDecodeError as e:
-        log.error(f"  ✗ Erro ao parsear JSON da IA: {e}\nResposta: {raw[:300]}")
+        log.error(f"  ✗ Erro ao parsear JSON: {e}\nResposta: {raw[:300]}")
         return []
     except Exception as e:
         log.error(f"  ✗ Erro na API {provider_label}: {e}")
@@ -365,9 +320,8 @@ Lembre: retorne SOMENTE o array JSON, sem nenhum texto adicional."""
 # ──────────────────────────────────────────────
 
 def anki_request(action: str, **params) -> dict:
-    """Faz uma requisição para o AnkiConnect."""
     payload = {"action": action, "version": 6, "params": params}
-    resp = requests.post(ANKI_HOST, json=payload, timeout=10)
+    resp    = requests.post(ANKI_HOST, json=payload, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     if data.get("error"):
@@ -376,25 +330,21 @@ def anki_request(action: str, **params) -> dict:
 
 
 def garantir_deck(deck_name: str):
-    """Cria o deck no Anki se não existir."""
     anki_request("createDeck", deck=deck_name)
 
 
 def modelo_existe(model_name: str) -> bool:
-    modelos = anki_request("modelNames")
-    return model_name in modelos
+    return model_name in anki_request("modelNames")
 
 
 def criar_modelo_basico():
-    """Cria o modelo 'Notion-Flashcard' se não existir."""
     model_name = "Notion-Flashcard"
     if modelo_existe(model_name):
         return model_name
-
     anki_request(
         "createModel",
         modelName=model_name,
-        inOrderFields=["Frente", "Verso", "Disciplina", "Aula", "Data"],
+        inOrderFields=["Frente", "Verso", "Categoria", "Titulo", "Data"],
         css="""
             .card { font-family: 'Segoe UI', Arial, sans-serif; font-size: 18px;
                     text-align: center; color: #1a1a1a; background: #fafafa; padding: 20px; }
@@ -403,7 +353,7 @@ def criar_modelo_basico():
         """,
         cardTemplates=[{
             "Name": "Card 1",
-            "Front": """<div class="tag">{{Disciplina}} · {{Aula}}</div>
+            "Front": """<div class="tag">{{Categoria}} · {{Titulo}}</div>
 <div>{{Frente}}</div>""",
             "Back": """{{FrontSide}}
 <hr>
@@ -415,44 +365,36 @@ def criar_modelo_basico():
     return model_name
 
 
-def adicionar_nota(deck: str, flashcard: dict, disciplina: str, aula: str, data: str) -> bool:
-    """Adiciona uma nota no Anki. Retorna True se criada com sucesso."""
-    model_name = "Notion-Flashcard"
+def adicionar_nota(deck: str, flashcard: dict, categoria: str, titulo: str, data: str) -> bool:
     try:
         anki_request(
             "addNote",
             note={
-                "deckName": deck,
-                "modelName": model_name,
+                "deckName":  deck,
+                "modelName": "Notion-Flashcard",
                 "fields": {
-                    "Frente":      flashcard["front"],
-                    "Verso":       flashcard["back"],
-                    "Disciplina":  disciplina,
-                    "Aula":        aula,
-                    "Data":        data,
+                    "Frente":    flashcard["front"],
+                    "Verso":     flashcard["back"],
+                    "Categoria": categoria,
+                    "Titulo":    titulo,
+                    "Data":      data,
                 },
-                "options": {
-                    "allowDuplicate": False,
-                    "duplicateScope": "deck",
-                },
+                "options": {"allowDuplicate": False, "duplicateScope": "deck"},
                 "tags": [
-                    disciplina.replace(" ", "_"),
-                    f"aula:{data}" if data else "sem_data",
+                    categoria.replace(" ", "_"),
+                    f"data:{data}" if data else "sem_data",
                     "notion-sync",
                 ],
             },
         )
         return True
     except Exception as e:
-        if "duplicate" in str(e).lower():
-            log.debug(f"    (duplicado ignorado)")
-        else:
+        if "duplicate" not in str(e).lower():
             log.warning(f"    ✗ Erro ao adicionar nota: {e}")
         return False
 
 
 def anki_disponivel() -> bool:
-    """Verifica se o Anki está aberto e o AnkiConnect está ativo."""
     try:
         anki_request("version")
         return True
@@ -461,149 +403,276 @@ def anki_disponivel() -> bool:
 
 
 # ──────────────────────────────────────────────
-# Pipeline principal
+# Pipeline — modo hierárquico
+# (DB pai contém páginas, cada página tem child DB)
 # ──────────────────────────────────────────────
 
-def processar_disciplina(disciplina_page: dict) -> dict:
-    """Processa uma disciplina: busca aulas, gera flashcards, envia ao Anki."""
-    nome   = get_nome_disciplina(disciplina_page)
-    page_id = disciplina_page["id"]
+def processar_hierarquico(cfg: dict) -> dict:
+    """
+    Estrutura: DB_PAI → páginas (disciplinas/categorias)
+               cada página → child DB → itens (aulas/conteúdos)
+    """
+    parent_db_id        = cfg["parent_db_id"]
+    parent_name_prop    = cfg["parent_name_prop"]
+    child_db_keyword    = cfg["child_db_keyword"]
+    child_title_prop    = cfg["child_title_prop"]
+    child_content_prop  = cfg.get("child_content_prop")
+    child_date_prop     = cfg.get("child_date_prop")
+    use_sync_field      = cfg.get("use_sync_field", True)
+    child_status_prop   = cfg.get("child_status_prop")
+    child_status_val    = cfg.get("child_status_complete")
+    child_sync_prop     = cfg.get("child_sync_prop")
+    child_sync_done     = cfg.get("child_sync_done", "✅ Sincronizado")
+    anki_deck_root      = cfg.get("anki_deck_root", "Notion::Sync")
+    last_sync_time      = cfg.get("last_sync_time")
 
-    log.info(f"\n{'='*50}")
-    log.info(f"📚 Disciplina: {nome}")
+    total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
 
-    stats = {"disciplina": nome, "aulas": 0, "flashcards_gerados": 0,
-             "flashcards_enviados": 0, "erros": 0}
+    # 1. Busca páginas pai
+    paginas_pai = query_database_all(parent_db_id)
+    log.info(f"Categorias encontradas: {len(paginas_pai)}")
 
-    # 1. Encontra o banco "Aulas — Anotações por Dia"
-    aulas_db_id = find_aulas_db_id(page_id)
-    if not aulas_db_id:
-        log.info("  → Sem banco de aulas. Pulando.")
-        return stats
+    for pai in paginas_pai:
+        nome_categoria = get_title_value(pai, parent_name_prop) or "Sem nome"
+        log.info(f"\n{'='*50}\n📚 {nome_categoria}")
 
-    # 2. Busca aulas pendentes (Completas e não sincronizadas)
-    aulas = get_aulas_pendentes(aulas_db_id)
-    if not aulas:
-        log.info("  → Nenhuma aula pendente de sincronização.")
-        return stats
+        # 2. Acha child DB
+        child_db_id = find_child_database(pai["id"], child_db_keyword)
+        if not child_db_id:
+            log.info("  → Child DB não encontrado. Pulando.")
+            continue
 
-    log.info(f"  → {len(aulas)} aula(s) para processar")
+        # 3. Monta filtro de busca
+        filtros = []
+        if use_sync_field and child_sync_prop:
+            filtros.append({
+                "property": child_sync_prop,
+                "select": {"does_not_equal": child_sync_done},
+            })
+        if child_status_prop and child_status_val:
+            filtros.append({
+                "property": child_status_prop,
+                "select": {"equals": child_status_val},
+            })
 
-    # 3. Deck no Anki: "Estudo::Concurso::NomeDisciplina"
-    deck_name = f"{ANKI_DECK_RAIZ}::{nome}"
-    garantir_deck(deck_name)
+        filter_obj = None
+        if len(filtros) == 1:
+            filter_obj = filtros[0]
+        elif len(filtros) > 1:
+            filter_obj = {"and": filtros}
 
-    for aula in aulas:
-        titulo = get_titulo_aula(aula)
-        data   = get_data_aula(aula)
-        log.info(f"\n  📄 Aula: {titulo} ({data})")
+        itens = query_database_all(child_db_id, filter_obj)
 
-        # 4. Monta conteúdo
-        conteudo = get_conteudo_aula(aula)
+        # 4. Se não há sync field, filtra por last_edited_time
+        if not use_sync_field and last_sync_time:
+            itens = [i for i in itens if is_newer_than(i, last_sync_time)]
+
+        if not itens:
+            log.info("  → Nenhum item pendente.")
+            continue
+
+        log.info(f"  → {len(itens)} item(s) para processar")
+
+        deck_name = f"{anki_deck_root}::{nome_categoria}"
+        garantir_deck(deck_name)
+        total["disciplinas"] += 1
+
+        for item in itens:
+            titulo   = get_title_value(item, child_title_prop) or "Sem título"
+            data     = get_date_value(item, child_date_prop) if child_date_prop else ""
+            log.info(f"\n  📄 {titulo} ({data})")
+
+            # Monta conteúdo
+            partes = []
+            if child_content_prop:
+                resumo = get_rich_text_value(item, child_content_prop)
+                if resumo:
+                    partes.append(f"[Resumo]\n{resumo}")
+            conteudo_blocos = get_page_content(item["id"])
+            if conteudo_blocos:
+                partes.append(f"[Anotações]\n{conteudo_blocos}")
+            conteudo = "\n\n".join(partes)
+
+            if not conteudo.strip():
+                log.info("    → Sem conteúdo. Pulando.")
+                continue
+
+            total["itens"] += 1
+
+            # Gera flashcards
+            cards = gerar_flashcards(nome_categoria, titulo, data, conteudo)
+            total["gerados"] += len(cards)
+
+            if not cards:
+                if use_sync_field and child_sync_prop:
+                    marcar_sincronizado(item["id"], child_sync_prop, "❌ Erro")
+                total["erros"] += 1
+                continue
+
+            # Envia ao Anki
+            enviados = sum(
+                adicionar_nota(deck_name, c, nome_categoria, titulo, data)
+                for c in cards
+            )
+            total["enviados"] += enviados
+            log.info(f"    ✓ {enviados}/{len(cards)} notas no Anki")
+
+            if use_sync_field and child_sync_prop:
+                marcar_sincronizado(item["id"], child_sync_prop, child_sync_done)
+                log.info("    ✓ Marcado como sincronizado")
+
+            time.sleep(1)
+
+    return total
+
+
+# ──────────────────────────────────────────────
+# Pipeline — modo plano
+# (DB único, cada página vira flashcards)
+# ──────────────────────────────────────────────
+
+def processar_plano(cfg: dict) -> dict:
+    """
+    Estrutura: DB único → cada página/item → flashcards diretos
+    """
+    db_id           = cfg["parent_db_id"]
+    title_prop      = cfg["parent_name_prop"]
+    content_prop    = cfg.get("child_content_prop")
+    date_prop       = cfg.get("child_date_prop")
+    use_sync_field  = cfg.get("use_sync_field", True)
+    sync_prop       = cfg.get("child_sync_prop")
+    sync_done       = cfg.get("child_sync_done", "✅ Sincronizado")
+    status_prop     = cfg.get("child_status_prop")
+    status_val      = cfg.get("child_status_complete")
+    anki_deck       = cfg.get("anki_deck_root", "Notion::Sync")
+    last_sync_time  = cfg.get("last_sync_time")
+
+    total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
+
+    filtros = []
+    if use_sync_field and sync_prop:
+        filtros.append({"property": sync_prop, "select": {"does_not_equal": sync_done}})
+    if status_prop and status_val:
+        filtros.append({"property": status_prop, "select": {"equals": status_val}})
+
+    filter_obj = None
+    if len(filtros) == 1:
+        filter_obj = filtros[0]
+    elif len(filtros) > 1:
+        filter_obj = {"and": filtros}
+
+    itens = query_database_all(db_id, filter_obj)
+
+    if not use_sync_field and last_sync_time:
+        itens = [i for i in itens if is_newer_than(i, last_sync_time)]
+
+    if not itens:
+        log.info("Nenhum item pendente.")
+        return total
+
+    log.info(f"{len(itens)} item(s) para processar")
+    garantir_deck(anki_deck)
+    total["disciplinas"] = 1
+
+    for item in itens:
+        titulo = get_title_value(item, title_prop) or "Sem título"
+        data   = get_date_value(item, date_prop) if date_prop else ""
+        log.info(f"\n  📄 {titulo}")
+
+        partes = []
+        if content_prop:
+            resumo = get_rich_text_value(item, content_prop)
+            if resumo:
+                partes.append(resumo)
+        conteudo_blocos = get_page_content(item["id"])
+        if conteudo_blocos:
+            partes.append(conteudo_blocos)
+        conteudo = "\n\n".join(partes)
+
         if not conteudo.strip():
             log.info("    → Sem conteúdo. Pulando.")
             continue
 
-        stats["aulas"] += 1
+        total["itens"] += 1
+        cards = gerar_flashcards("", titulo, data, conteudo)
+        total["gerados"] += len(cards)
 
-        # 5. Gera flashcards com IA
-        flashcards = gerar_flashcards(nome, titulo, data, conteudo)
-        stats["flashcards_gerados"] += len(flashcards)
-
-        if not flashcards:
-            marcar_sincronizado(aula["id"], "❌ Erro")
-            stats["erros"] += 1
+        if not cards:
+            if use_sync_field and sync_prop:
+                marcar_sincronizado(item["id"], sync_prop, "❌ Erro")
+            total["erros"] += 1
             continue
 
-        # 6. Envia ao Anki
-        enviados = 0
-        for card in flashcards:
-            if adicionar_nota(deck_name, card, nome, titulo, data):
-                enviados += 1
+        enviados = sum(adicionar_nota(anki_deck, c, "", titulo, data) for c in cards)
+        total["enviados"] += enviados
+        log.info(f"    ✓ {enviados}/{len(cards)} notas no Anki")
 
-        stats["flashcards_enviados"] += enviados
-        log.info(f"    ✓ {enviados}/{len(flashcards)} notas adicionadas ao Anki")
+        if use_sync_field and sync_prop:
+            marcar_sincronizado(item["id"], sync_prop, sync_done)
 
-        # 7. Marca como sincronizado no Notion
-        marcar_sincronizado(aula["id"], "✅ Sincronizado")
-        log.info(f"    ✓ Marcado como sincronizado no Notion")
-
-        # Pequena pausa para não sobrecarregar a API
         time.sleep(1)
 
-    return stats
+    return total
 
+
+# ──────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────
 
 def main():
+    from datetime import date
     log.info("🚀 Iniciando sincronização Notion → Anki")
     log.info(f"Data: {date.today()}")
 
-    # Verifica conexões
     if not NOTION_TOKEN:
         log.error("❌ NOTION_TOKEN não configurado no .env")
         return
 
     if AI_PROVIDER == "gemini":
         if not GOOGLE_GENAI_AVAILABLE:
-            log.error("❌ google-genai não instalado. Execute: pip install google-genai")
+            log.error("❌ google-genai não instalado.")
             return
-        if not GEMINI_API_KEY:
-            log.error("❌ GEMINI_API_KEY não configurado no .env")
-            return
-        if gemini_client is None:
-            log.error("❌ Falha ao inicializar cliente Gemini")
+        if not gemini_client:
+            log.error("❌ Falha ao inicializar Gemini.")
             return
     else:
         if not ANTHROPIC_AVAILABLE:
-            log.error("❌ anthropic não instalado. Execute: pip install anthropic")
+            log.error("❌ anthropic não instalado.")
             return
-        if not ANTHROPIC_API_KEY:
-            log.error("❌ ANTHROPIC_API_KEY não configurado no .env")
-            return
-        if claude_client is None:
-            log.error("❌ Falha ao inicializar cliente Claude")
+        if not claude_client:
+            log.error("❌ Falha ao inicializar Claude.")
             return
 
     if not anki_disponivel():
-        log.error(f"❌ Anki não está disponível em {ANKI_HOST}")
-        log.error("   Certifique-se que o Anki está aberto e o plugin AnkiConnect está instalado.")
+        log.error(f"❌ Anki não disponível em {ANKI_HOST}")
         return
 
-    provider_label = "Gemini" if AI_PROVIDER == "gemini" else "Claude"
-    log.info(f"✓ Conexões verificadas (Notion, {provider_label}, Anki)")
+    cfg = load_notion_config()
+    if not cfg:
+        log.error("❌ Estrutura Notion não configurada.")
+        log.error("   Execute o app.py e configure na aba 'Configurar Notion'.")
+        return
 
-    # Garante que o modelo de flashcard existe no Anki
+    log.info("✓ Conexões verificadas")
     criar_modelo_basico()
 
-    # Busca todas as disciplinas
-    disciplinas = get_all_disciplinas()
+    modo = cfg.get("mode", "hierarchical")
+    if modo == "hierarchical":
+        total = processar_hierarquico(cfg)
+    else:
+        total = processar_plano(cfg)
 
-    # Processa cada uma
-    total_stats = {
-        "disciplinas_processadas": 0,
-        "aulas_processadas": 0,
-        "flashcards_gerados": 0,
-        "flashcards_enviados": 0,
-        "erros": 0,
-    }
+    # Salva timestamp de sync
+    cfg["last_sync_time"] = datetime.now(timezone.utc).isoformat()
+    save_notion_config(cfg)
 
-    for disc_page in disciplinas:
-        stats = processar_disciplina(disc_page)
-        if stats["aulas"] > 0:
-            total_stats["disciplinas_processadas"] += 1
-        total_stats["aulas_processadas"]    += stats["aulas"]
-        total_stats["flashcards_gerados"]   += stats["flashcards_gerados"]
-        total_stats["flashcards_enviados"]  += stats["flashcards_enviados"]
-        total_stats["erros"]                += stats["erros"]
-
-    # Relatório final
     log.info(f"\n{'='*50}")
     log.info("📊 RELATÓRIO FINAL")
-    log.info(f"  Disciplinas processadas : {total_stats['disciplinas_processadas']}")
-    log.info(f"  Aulas processadas       : {total_stats['aulas_processadas']}")
-    log.info(f"  Flashcards gerados      : {total_stats['flashcards_gerados']}")
-    log.info(f"  Flashcards no Anki      : {total_stats['flashcards_enviados']}")
-    log.info(f"  Erros                   : {total_stats['erros']}")
+    log.info(f"  Categorias processadas : {total['disciplinas']}")
+    log.info(f"  Itens processados      : {total['itens']}")
+    log.info(f"  Flashcards gerados     : {total['gerados']}")
+    log.info(f"  Flashcards no Anki     : {total['enviados']}")
+    log.info(f"  Erros                  : {total['erros']}")
     log.info("✅ Sincronização concluída!")
 
 
