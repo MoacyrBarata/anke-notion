@@ -7,6 +7,7 @@ requests==2.33.1
 python-dotenv==1.2.2
 
 # Interface visual
+flet>=0.24.0
 streamlit>=1.35.0
 Pillow>=10.0.0
 customtkinter>=5.2.0

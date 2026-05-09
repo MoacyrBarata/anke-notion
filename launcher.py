@@ -587,6 +587,21 @@ def _launch_webview(proc: subprocess.Popen) -> bool:
         return False
 
 
+def _launch_flet():
+    """Run app_flet.py directly — Flet opens its own native window."""
+    print(f"  {_dim('Iniciando interface Flet...')}")
+    try:
+        proc = subprocess.Popen(
+            [str(_venv_python()), str(ROOT / "app_flet.py")],
+            cwd=str(ROOT),
+        )
+        proc.wait()
+    except KeyboardInterrupt:
+        print(f"\n  {_yellow('Encerrado.')}")
+    except Exception as e:
+        print(f"  {_yellow('Erro ao iniciar Flet:')} {e}")
+
+
 def _launch_streamlit():
     _skip_streamlit_email_prompt()
 
@@ -652,8 +667,8 @@ def main():
     # Ensure icon exists (quick if already done)
     _generate_icon()
 
-    # Launch Streamlit
-    _launch_streamlit()
+    # Launch Flet app
+    _launch_flet()
 
     if _os() == "windows":
         input("\n  Pressione Enter para fechar...")
