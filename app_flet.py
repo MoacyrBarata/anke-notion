@@ -1351,31 +1351,28 @@ def main(page: ft.Page):
         f_kw        = field("Palavra-chave do DB filho",
             saved.get("child_db_keyword") or "Aulas") if mode == "hierarchical" else None
 
-        # Sync prop + value (value vira dropdown quando há options reais).
+        # Sync prop + value — value field is ALWAYS a Dropdown so it reflects
+        # the actual options of the selected Notion column. When no prop is
+        # picked yet (or the prop has no options), the dropdown still shows
+        # the saved/default value as a single fallback entry.
         _initial_sync_p = _v("child_sync_prop", "sync")
         sync_opts_list  = _select_options(_initial_sync_p)
-        if sync_opts_list:
-            _sync_default = saved.get("child_sync_done") or "✅ Sincronizado"
-            if _sync_default not in sync_opts_list:
-                _sync_default = sync_opts_list[0]
-            f_sync_done = dropdown("Valor = sincronizado",
-                                    sync_opts_list, _sync_default)
-        else:
-            f_sync_done = field("Valor = sincronizado",
-                saved.get("child_sync_done") or "✅ Sincronizado")
+        _sync_default   = saved.get("child_sync_done") or "✅ Sincronizado"
+        _sync_display   = sync_opts_list if sync_opts_list else [_sync_default]
+        if _sync_default not in _sync_display:
+            _sync_default = _sync_display[0]
+        f_sync_done = dropdown("Valor = sincronizado",
+                               _sync_display, _sync_default)
 
-        # Status prop + value.
+        # Status prop + value — same treatment as sync.
         _initial_status_p = _v("child_status_prop", "status")
         status_opts_list  = _select_options(_initial_status_p)
-        if status_opts_list:
-            _status_default = saved.get("child_status_complete") or "✅ Completa"
-            if _status_default not in status_opts_list:
-                _status_default = status_opts_list[0]
-            f_status_v = dropdown("Valor = pronto",
-                                   status_opts_list, _status_default)
-        else:
-            f_status_v = field("Valor = pronto",
-                saved.get("child_status_complete") or "✅ Completa")
+        _status_default   = saved.get("child_status_complete") or "✅ Completa"
+        _status_display   = status_opts_list if status_opts_list else [_status_default]
+        if _status_default not in _status_display:
+            _status_default = _status_display[0]
+        f_status_v = dropdown("Valor = pronto",
+                              _status_display, _status_default)
 
         # Forward declaration so on_change pode capturar/rebuildar.
         def _refresh_after_prop_change(e=None):
@@ -1385,10 +1382,40 @@ def main(page: ft.Page):
 
         dd_sync_p   = dropdown("Campo sync (opcional)",
             s_opts, _initial_sync_p)
-        dd_sync_p.on_change   = _refresh_after_prop_change
         dd_status_p = dropdown("Campo status (filtro, opcional)",
             s_opts, _initial_status_p)
-        dd_status_p.on_change = _refresh_after_prop_change
+
+        def _refresh_value_options(value_dd, prop_dd, fallback_default: str):
+            """Repopulate the value dropdown's options based on the property
+            currently selected in `prop_dd`. Runs synchronously before any
+            rebuild so the user sees the new options immediately."""
+            new_opts = _select_options(prop_dd.value)
+            if new_opts:
+                if value_dd.value in new_opts:
+                    chosen = value_dd.value
+                else:
+                    chosen = new_opts[0]
+                display = new_opts
+            else:
+                chosen  = value_dd.value or fallback_default
+                display = [chosen]
+            value_dd.options = [ft.dropdown.Option(key=o, text=o) for o in display]
+            value_dd.value   = chosen
+            try:
+                value_dd.update()
+            except Exception:
+                pass  # widget not yet attached to page — rebuild will handle it
+
+        def _on_sync_prop_change(e=None):
+            _refresh_value_options(f_sync_done, dd_sync_p, "✅ Sincronizado")
+            _refresh_after_prop_change()
+
+        def _on_status_prop_change(e=None):
+            _refresh_value_options(f_status_v, dd_status_p, "✅ Completa")
+            _refresh_after_prop_change()
+
+        dd_sync_p.on_change   = _on_sync_prop_change
+        dd_status_p.on_change = _on_status_prop_change
 
         use_sync    = ft.Switch(
             value=saved.get("use_sync_field", True),
@@ -1626,10 +1653,10 @@ def main(page: ft.Page):
         ))
         _sync_value_hint = (
             "Escolha qual opção do select será gravada quando o item for "
-            "sincronizado. As opções acima vêm direto do seu Notion."
+            "sincronizado. As opções vêm direto do campo selecionado acima."
             if sync_opts_list
-            else "Texto exato (case-sensitive) que o app grava no campo sync. "
-                 "Selecione um campo sync acima para ver as opções existentes."
+            else "Selecione um campo sync acima para escolher entre as opções "
+                 "existentes na sua tabela do Notion."
         )
         ctrls.append(_explained_field(
             ft.Icons.LABEL_OUTLINE_ROUNDED,
@@ -1649,10 +1676,10 @@ def main(page: ft.Page):
         ))
         _status_value_hint = (
             "Apenas linhas cujo status seja igual a esta opção serão "
-            "processadas. As opções acima vêm direto do seu Notion."
+            "processadas. As opções vêm direto do campo selecionado acima."
             if status_opts_list
-            else "Texto exato do valor que indica 'pronto para sincronizar'. "
-                 "Selecione um campo status acima para ver as opções existentes."
+            else "Selecione um campo status acima para escolher entre as opções "
+                 "existentes na sua tabela do Notion."
         )
         ctrls.append(_explained_field(
             ft.Icons.RULE_ROUNDED,
