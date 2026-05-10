@@ -597,6 +597,7 @@ def main(page: ft.Page):
                 test_btn_ref.current.disabled = False
                 test_btn_ref.current.content  = "Testar"
                 test_btn_ref.current.icon     = ft.Icons.WIFI_ROUNDED
+            time.sleep(0.05)
             page.update()
         threading.Thread(target=work, daemon=True).start()
 
@@ -644,21 +645,23 @@ def main(page: ft.Page):
         def work():
             proc = run_sync(env)
             total_fc = 0
+            line_n   = 0
             for line in proc.stdout:
                 state["log_lines"].append(line)
                 log_field.value = "".join(state["log_lines"][-100:])
                 stripped = line.strip()
-                # Show current log line on the flashcard front
                 if stripped and not stripped.startswith(("---", "===", "Flashcards")):
                     _fc_title.value = stripped[:46]
-                # Update running flashcard counter
                 if "Flashcards gerados" in line:
                     try:
                         total_fc = int(line.split(":")[-1].strip())
                         _fc_count.value = f"{total_fc} flashcard(s) criado(s)"
                     except ValueError:
                         pass
-                page.update()
+                # Throttle repaints: always on key events, else every 3 lines
+                line_n += 1
+                if "Flashcards" in line or line_n % 3 == 0:
+                    page.update()
             proc.wait()
             state["sync_running"] = False
             state["last_stats"]   = parse_stats(state["log_lines"])
@@ -682,6 +685,7 @@ def main(page: ft.Page):
                 _fc_title.value     = "Flashcards enviados ao Anki!"
                 _fc_count.value     = f"✅ {s.get('enviados', total_fc)} cartões sincronizados"
                 _fc_count.color     = C_SUCCESS
+                time.sleep(0.05)
                 page.update()
                 # Pleasant two-tone completion beep (Windows only, silent on other OS)
                 try:
@@ -719,6 +723,7 @@ def main(page: ft.Page):
                 stat_card("No Anki",     s["enviados"]),
                 stat_card("Erros",       s["erros"], warn=True),
             ]
+            time.sleep(0.05)
             page.update()
         threading.Thread(target=work, daemon=True).start()
 
