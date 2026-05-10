@@ -809,7 +809,7 @@ def main(page: ft.Page):
                 test_btn_ref.current.icon     = ft.Icons.WIFI_ROUNDED
             _safe_update(nc_card, ai_card, ak_card,
                          test_btn_ref.current if test_btn_ref.current else None)
-        threading.Thread(target=work, daemon=True).start()
+        page.run_thread(work)
 
     def on_sync(e):
         if state["sync_running"]:
@@ -942,7 +942,7 @@ def main(page: ft.Page):
                          _fc_front, _fc_shadow1, _fc_shadow2,
                          _fc_icon, _fc_title, _fc_count,
                          sync_btn_ref.current if sync_btn_ref.current else None)
-        threading.Thread(target=work, daemon=True).start()
+        page.run_thread(work)
 
     def on_clear(e):
         state["log_lines"]  = []
@@ -1215,7 +1215,7 @@ def main(page: ft.Page):
 
             if not state["notion_loading"]:
                 state["notion_loading"] = True
-                threading.Thread(target=load_dbs, daemon=True).start()
+                page.run_thread(load_dbs)
 
             ctrls.append(glass(ft.Column([
                 ft.Row([
@@ -1968,7 +1968,7 @@ def main(page: ft.Page):
                         overlay_color="#ffffff,0.094",
                     )
                     _safe_update(b)
-            threading.Thread(target=_restore, daemon=True).start()
+            page.run_thread(_restore)
 
     # ── Update banner (populated by background check) ──────────────────────────
     upd_state = {"checking": False, "info": None, "applying": False}
@@ -2037,7 +2037,7 @@ def main(page: ft.Page):
             upd_state["checking"] = False
             upd_status.value = ""
             _set_upd_banner(info)
-        threading.Thread(target=work, daemon=True).start()
+        page.run_thread(work)
 
     def _apply_update(e=None):
         if upd_state["applying"]:
@@ -2075,7 +2075,7 @@ def main(page: ft.Page):
                 snack(f"Falha ao atualizar: {msg}", C_ERROR)
             _safe_update(upd_card, upd_msg, upd_status,
                          upd_btn_ref.current, upd_restart_ref.current)
-        threading.Thread(target=work, daemon=True).start()
+        page.run_thread(work)
 
     upd_card = ft.Container(
         content=ft.Column([
@@ -2506,7 +2506,7 @@ def main(page: ft.Page):
                       C_ACCENT)
             except Exception:
                 pass
-    threading.Thread(target=_bg_update_check, daemon=True).start()
+    page.run_thread(_bg_update_check)
 
 
 if __name__ == "__main__":

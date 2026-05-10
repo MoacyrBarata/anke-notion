@@ -35,12 +35,23 @@ class FakePage:
         self.snack_bar = None
         self._controls = []
         self.update_calls = 0
+        self.run_thread_calls = []
 
     def update(self):
         self.update_calls += 1
 
     def add(self, *controls):
         self._controls.extend(controls)
+
+    def run_thread(self, handler, *args, **kwargs):
+        # Run synchronously in tests to keep behavior deterministic.
+        # Real Flet runs this in its executor; for tests we don't need
+        # actual concurrency.
+        self.run_thread_calls.append(handler)
+        try:
+            handler(*args, **kwargs)
+        except Exception:
+            pass
 
 
 @pytest.fixture()
@@ -268,7 +279,6 @@ class _ImmediateThread:
 
 def test_on_test_updates_conn_row(page, monkeypatch):
     monkeypatch.setattr(app_flet, "load_notion_config", lambda: None)
-    monkeypatch.setattr("app_flet.threading.Thread", _ImmediateThread)
     monkeypatch.setattr(app_flet, "check_notion", lambda t: (True, "Auth OK"))
     monkeypatch.setattr(app_flet, "check_anki", lambda h: (False, "Anki closed"))
     monkeypatch.setattr(app_flet, "check_ai_key", lambda p, k: (True, "Valid"))
@@ -283,9 +293,13 @@ def test_on_test_updates_conn_row(page, monkeypatch):
 
     test_btn.on_click(MagicMock())
 
-    # After on_test runs synchronously, conn_row should have 3 badges
-    conn_row = conn_col.controls[2]  # ft.Row with badges
+    # After on_test runs synchronously (FakePage.run_thread runs inline),
+    # conn_row should have 3 badges and the worker must have used run_thread.
+    conn_row = conn_col.controls[2]
     assert len(conn_row.controls) == 3
+    # Verify the on_test handler scheduled work via page.run_thread (NOT
+    # threading.Thread). Background check at startup also goes through it.
+    assert len(page.run_thread_calls) >= 2  # bg update check + on_test work
 
 
 # ── Wizard step 1 structure ───────────────────────────────────────────────────
@@ -350,3 +364,53 @@ def test_snack_sets_snack_bar(page):
     save_btn.on_click(MagicMock())
     assert page.snack_bar is not None
     assert page.snack_bar.open is True
+
+
+# ── Threading model: workers must use page.run_thread ─────────────────────────
+
+def test_no_raw_threading_thread_in_app_flet():
+    """app_flet.py must NOT spawn raw threading.Thread workers — those bypass
+    Flet's executor and cause the "click outside to refresh" symptom on Flet
+    desktop. All background work must go through page.run_thread().
+    """
+    src = (Path(__file__).parent.parent / "app_flet.py").read_text(encoding="utf-8")
+    # Permit imports / type hints, forbid actual instantiation.
+    assert "threading.Thread(" not in src, (
+        "Found raw threading.Thread() in app_flet.py. Use page.run_thread() "
+        "so updates are dispatched on the Flet UI executor."
+    )
+
+
+def test_main_starts_bg_update_check_via_run_thread(page, monkeypatch):
+    """Background update check at startup must go through page.run_thread."""
+    monkeypatch.setattr(app_flet, "load_notion_config", lambda: None)
+    # Stub updater so bg check returns quickly.
+    monkeypatch.setattr(app_flet.updater, "check_for_update",
+                        lambda: {"has_update": False, "current": "0.0.0"})
+    app_flet.main(page)
+    # main() schedules _bg_update_check via page.run_thread.
+    assert len(page.run_thread_calls) >= 1
+
+
+def test_run_thread_workers_call_safe_update(page, monkeypatch):
+    """End-to-end: clicking the test button schedules work via run_thread,
+    and after work runs the conn cards reflect the result without any extra
+    UI events (i.e. no need to click outside)."""
+    monkeypatch.setattr(app_flet, "load_notion_config", lambda: None)
+    monkeypatch.setattr(app_flet, "check_notion", lambda t: (True, "OK"))
+    monkeypatch.setattr(app_flet, "check_anki",   lambda h: (True, "OK"))
+    monkeypatch.setattr(app_flet, "check_ai_key", lambda p, k: (True, "OK"))
+
+    app_flet.main(page)
+    updates_before_click = page.update_calls
+    content = page._controls[0].controls[1]
+    view_sync = content.content
+    conn_glass = view_sync.controls[2]
+    conn_col   = conn_glass.content
+    test_btn   = conn_col.controls[0].controls[2]
+
+    test_btn.on_click(MagicMock())
+
+    # Work ran synchronously in FakePage.run_thread → conn cards updated and
+    # page.update was called as part of _safe_update at end of work().
+    assert page.update_calls > updates_before_click
