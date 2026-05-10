@@ -2025,6 +2025,26 @@ def main(page: ft.Page):
             "Confirme Notion, IA e Anki conectados",
             "Iniciar Sincronização e acompanhe o log",
         ]),
+        help_block("5. Como o app decide o que sincronizar", [
+            "Camada 1 — coluna 'Sincronização' no Notion: linhas com valor ✅ "
+            "Sincronizado são ignoradas. Esta é a fonte primária.",
+            "Camada 2 — banco SQLite local (sync_history.db): registra cada "
+            "item processado e bloqueia re-envio de itens já sincronizados "
+            "com sucesso. Funciona como segurança extra contra falhas de "
+            "rede, duplicatas e perda do estado da coluna no Notion.",
+            "AMBAS as camadas precisam liberar para uma linha ser enviada "
+            "à IA. Linha nova passa nas duas; linha já sincronizada é "
+            "bloqueada por qualquer uma.",
+            "Para forçar re-sync de UM item: aba Histórico → botão ↻ Re-sync "
+            "(apaga registro local) E mude o valor da coluna Sincronização "
+            "no Notion para algo diferente de ✅ Sincronizado.",
+            "Para forçar re-sync de TUDO: aba Histórico → 🗑 Apagar "
+            "histórico (zera SQLite) E desmarque a coluna Sincronização das "
+            "linhas no Notion.",
+            "Falha (quota IA, rede etc.): linha vira ❌ Erro no Notion e "
+            "fica registrada como 'error' no SQLite — próximo run re-tenta "
+            "automaticamente, sem ação manual.",
+        ]),
         ft.Container(height=16),
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
