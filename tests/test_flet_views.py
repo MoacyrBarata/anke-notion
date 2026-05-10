@@ -374,8 +374,19 @@ def test_no_raw_threading_thread_in_app_flet():
     desktop. All background work must go through page.run_thread().
     """
     src = (Path(__file__).parent.parent / "app_flet.py").read_text(encoding="utf-8")
-    # Permit imports / type hints, forbid actual instantiation.
-    assert "threading.Thread(" not in src, (
+    # Strip comments so the rule "never instantiate threading.Thread" allows
+    # mentioning the API name in docstrings/explanatory comments.
+    code_lines = []
+    for line in src.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        # Drop trailing inline comments too.
+        if "#" in line:
+            line = line.split("#", 1)[0]
+        code_lines.append(line)
+    code_only = "\n".join(code_lines)
+    assert "threading.Thread(" not in code_only, (
         "Found raw threading.Thread() in app_flet.py. Use page.run_thread() "
         "so updates are dispatched on the Flet UI executor."
     )

@@ -701,11 +701,26 @@ def main(page: ft.Page):
     ai_card, ai_rw, ai_iw, ai_ic, ai_msg = _mk_conn_card(ft.Icons.SMART_TOY_OUTLINED, "IA")
     ak_card, ak_rw, ak_iw, ak_ic, ak_msg = _mk_conn_card(ft.Icons.STYLE_OUTLINED,     "Anki")
 
-    # Thread-safe UI repaint helper. Flet 0.85 silently queues control mutations
-    # made off the UI thread; without an explicit `.update()` on the affected
-    # control, the page only repaints when it receives a stray UI event (mouse
-    # move, focus change). Calling `.update()` on each touched control AND
-    # `page.update()` at the end forces an immediate paint.
+    # ────────────────────────────────────────────────────────────────────────
+    # CRITICAL — Flet threading model
+    # ────────────────────────────────────────────────────────────────────────
+    # NEVER use `threading.Thread(...).start()` for background work in this
+    # file. Flet desktop runs Flutter on its own executor; raw threads bypass
+    # it, so control mutations are queued but never flushed until the user
+    # generates a UI event (mouse move, click outside the window, resize).
+    # Symptom: spinners stay spinning even after work finished.
+    #
+    # ALWAYS schedule work via `page.run_thread(handler)` — that registers the
+    # handler with Flet's executor and dispatches updates correctly. See
+    # AGENTS.md → "Armadilhas críticas para LLMs" for the full reasoning.
+    # `tests/test_flet_views.py::test_no_raw_threading_thread_in_app_flet`
+    # blocks regressions.
+    #
+    # `_safe_update` is the companion helper: at the end of every worker call
+    # `_safe_update(c1, c2, ...)` listing every control whose state changed.
+    # `.update()` on the individual control AND `page.update()` at the end
+    # forces Flet to flush the message pipeline immediately.
+    # ────────────────────────────────────────────────────────────────────────
     def _safe_update(*controls):
         for c in controls:
             if c is None:

@@ -613,14 +613,26 @@ Se ausente **ou** mais antigo que `requirements.txt` → reinstala.
 
 ## Provedores de IA
 
-Controlado por `AI_PROVIDER` no `.env`.
+Controlado por `AI_PROVIDER` no `.env`. **4 providers suportados.**
 
-| Provider | SDK | Env vars | Modelo padrão |
-|---|---|---|---|
-| `claude` (padrão) | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-5` |
-| `gemini` | `google-genai` | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-2.5-flash` |
+| Provider | Tier | SDK | Env vars | Modelo padrão |
+|---|---|---|---|---|
+| `gemini` (padrão) | 🆓 Free | `google-genai` | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-2.5-flash` |
+| `groq` | 🆓 Free | `groq` | `GROQ_API_KEY`, `GROQ_MODEL` | `llama-3.3-70b-versatile` |
+| `claude` | 💳 Pago | `anthropic` | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | `claude-opus-4-5` |
+| `openai` | 💳 Pago | `openai` | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-4o-mini` |
 
-`SYSTEM_PROMPT` é idêntico para ambos. Retorno esperado: array JSON `[{"front":"...","back":"..."}]`.
+UI mostra cards 2x2 com badges 🆓/💳 + switch "Mostrar apenas opções grátis"
+(filtro implementado via `_PROVIDER_TIERS` em `app_flet.py`).
+
+`SYSTEM_PROMPT` é idêntico para todos. Claude e Gemini retornam array JSON
+diretamente. OpenAI/Groq usam `response_format=json_object` e retornam
+`{"flashcards": [...]}` — o parser extrai o array via chaves
+`flashcards|cards|data|items`. Validação por keys das chaves de API:
+- `claude` → `sk-ant-...`
+- `gemini` → `AIza...`
+- `openai` → `sk-...` (mas NÃO `sk-ant-...`)
+- `groq`   → `gsk_...`
 
 ### Prompt e configs LLM (`gerar_flashcards`)
 
@@ -687,12 +699,18 @@ explicitamente: `→ X/N flashcards gerados` por item.
 | Variável | Obrigatória | Padrão | Descrição |
 |---|---|---|---|
 | `NOTION_TOKEN` | Sim | — | Token `secret_...` ou `ntn_...` da integração |
-| `AI_PROVIDER` | Não | `claude` | `claude` ou `gemini` |
+| `AI_PROVIDER` | Não | `gemini` | `claude` \| `gemini` \| `openai` \| `groq` |
 | `ANTHROPIC_API_KEY` | Se claude | — | Chave `sk-ant-...` |
+| `CLAUDE_MODEL` | Não | `claude-opus-4-5` | Modelo Claude |
 | `GEMINI_API_KEY` | Se gemini | — | Chave `AIza...` |
-| `GEMINI_MODEL` | Não | `gemini-2.0-flash` | Modelo Gemini |
+| `GEMINI_MODEL` | Não | `gemini-2.5-flash` | Modelo Gemini |
+| `OPENAI_API_KEY` | Se openai | — | Chave `sk-...` (NÃO `sk-ant-...`) |
+| `OPENAI_MODEL` | Não | `gpt-4o-mini` | Modelo OpenAI |
+| `GROQ_API_KEY` | Se groq | — | Chave `gsk_...` |
+| `GROQ_MODEL` | Não | `llama-3.3-70b-versatile` | Modelo Groq |
 | `ANKI_HOST` | Não | `http://localhost:8765` | URL AnkiConnect |
 | `MAX_FLASHCARDS_POR_AULA` | Não | `10` | Limite de flashcards por item |
+| `GITHUB_TOKEN` | Não | — | Opcional. Updater usa se setado p/ evitar rate-limit GitHub |
 
 ---
 
@@ -747,6 +765,91 @@ credenciais reais. Use `_test_notion.py` como sandbox manual.
   `tests/conftest.py::mock_streamlit` define `st.button.return_value = False`
   para que `if st.button(...)` no top-level de `app.py` não dispare `save_cfg`
   com MagicMocks no momento do `import app`.
+
+---
+
+## ⚠️  Armadilhas críticas para LLMs (read FIRST)
+
+### 1. Flet desktop NÃO ACEITA `threading.Thread` para trabalho em background
+
+**Sintoma:** UI fica "presa" em loading. Só atualiza quando usuário clica fora
+do app, redimensiona janela, ou move o mouse sobre algum widget.
+
+**Causa:** Aplicações Flet desktop rodam num único thread/event-loop com um
+executor próprio. `threading.Thread(target=fn).start()` cria thread fora desse
+executor → mutações de controle (`control.value = X`, `control.visible = Y`)
+são enfileiradas no Python mas o Flutter Engine só processa a fila quando
+recebe um evento de SO (mouse, foco, resize). Resultado: UI parece travada.
+
+Confirmado nos issues oficiais:
+- https://github.com/flet-dev/flet/issues/3571 (race condition entre threads)
+- https://github.com/flet-dev/flet/issues/5318 (run_thread vs run_task)
+- https://flet.dev/docs/controls/page/ (API oficial)
+
+**Regra absoluta:**
+```python
+# ❌ NUNCA — bypassa executor do Flet, causa "click outside to refresh":
+threading.Thread(target=work, daemon=True).start()
+
+# ✅ SEMPRE — registra trabalho no executor do Flet:
+page.run_thread(work)              # função síncrona bloqueante (CPU/IO)
+page.run_task(coro)                # corotina async
+```
+
+`page.run_thread(handler, *args, **kwargs)` aceita argumentos posicionais e
+keywords e roda `handler` num ThreadPoolExecutor associado à `page`. Mutações
+de controle dentro do handler são propagadas pelo dispatcher do Flet
+imediatamente quando se chama `page.update()` no fim.
+
+**Helper estabelecido em `app_flet.py`:**
+```python
+def _safe_update(*controls):
+    """Chama .update() em cada controle + page.update() no fim. Garante que
+    Flet flushe a fila de mensagens UI imediatamente, sem depender de evento
+    externo (clique fora, resize) para acordar o render loop."""
+    for c in controls:
+        if c is None:
+            continue
+        try: c.update()
+        except Exception: pass
+    try: page.update()
+    except Exception: pass
+```
+
+Use `_safe_update` no FIM de TODA função que rode dentro de `page.run_thread`,
+listando os controles cujo estado mudou. `page.update()` sozinho não é
+suficiente — chamar `.update()` no controle individual é o que aciona o
+dispatch incremental do Flet.
+
+**Test guard (em `tests/test_flet_views.py`):**
+```python
+def test_no_raw_threading_thread_in_app_flet():
+    src = (Path(__file__).parent.parent / "app_flet.py").read_text(...)
+    assert "threading.Thread(" not in src, (
+        "Use page.run_thread() — threading.Thread bypassa o executor do Flet."
+    )
+```
+
+Esse teste é a barreira de regressão. Se você sentir necessidade de usar
+`threading.Thread` em `app_flet.py`, pare e reescreva com `page.run_thread`.
+
+`FakePage.run_thread` em `tests/test_flet_views.py` roda o handler
+síncronamente nos testes — basta chamar `page.run_thread(fn)` que o teste
+executa imediatamente.
+
+### 2. Updater nunca sobrescreve user data
+
+`_USER_DATA` em `updater.py` é whitelist HARDCODED. Adicionar arquivo novo
+de estado do usuário (ex: nova config, novo banco)? Adicione em `_USER_DATA`
+ANTES de fazer release. Caso contrário usuários perdem dados ao atualizar.
+
+### 3. Updater usa manifesto para deletar órfãos
+
+`.update_manifest.json` lista arquivos shipped no último update. `_delete_orphans`
+deleta APENAS arquivos do manifesto antigo que sumiram do release novo. Se
+manifesto não existe ainda (primeira execução do app pós-feature), pula
+deleção (conservador). NUNCA delete arquivos que não estavam no manifesto —
+podem ser arquivos criados pelo usuário.
 
 ---
 
