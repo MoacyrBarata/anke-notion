@@ -1801,15 +1801,8 @@ def main(page: ft.Page):
     upd_state = {"checking": False, "info": None, "applying": False}
     upd_card  = ft.Container(visible=False)
     upd_btn_ref = ft.Ref[ft.OutlinedButton]()
-    upd_restart_ref = ft.Ref[ft.FilledButton]()
     upd_msg     = ft.Text("", color=C_DIM, size=12, selectable=True)
     upd_status  = ft.Text("", color=C_DIM, size=11, italic=True)
-
-    def _restart_app(e=None):
-        try:
-            updater.restart_app()
-        except Exception as exc:
-            snack(f"Falha ao reiniciar: {exc}", C_ERROR)
 
     def _set_upd_banner(info: dict | None):
         upd_state["info"] = info
@@ -1886,12 +1879,10 @@ def main(page: ft.Page):
                 upd_card.bgcolor = f"{C_SUCCESS},0.10"
                 upd_card.border  = _ball(1, f"{C_SUCCESS},0.35")
                 upd_msg.value    = (f"✅ Atualização aplicada ({msg}).\n"
-                                    f"Reinicie o app para carregar o novo código.")
+                                    f"Feche e abra o app para usar a nova versão.")
                 if upd_btn_ref.current:
                     upd_btn_ref.current.visible = False
-                if upd_restart_ref.current:
-                    upd_restart_ref.current.visible = True
-                snack("✅ Atualização aplicada — clique em Reiniciar.", C_SUCCESS)
+                snack("✅ Atualização aplicada — reinicie o app.", C_SUCCESS)
             else:
                 upd_status.value = ""
                 upd_card.bgcolor = f"{C_ERROR},0.10"
@@ -1919,18 +1910,6 @@ def main(page: ft.Page):
                     style=ft.ButtonStyle(
                         color=C_ACCENT,
                         side=ft.BorderSide(1, f"{C_ACCENT},0.5"),
-                        shape=ft.RoundedRectangleBorder(radius=10),
-                    ),
-                ),
-                ft.FilledButton(
-                    "Reiniciar agora",
-                    icon=ft.Icons.RESTART_ALT_ROUNDED,
-                    on_click=_restart_app,
-                    ref=upd_restart_ref,
-                    visible=False,
-                    style=ft.ButtonStyle(
-                        bgcolor=C_SUCCESS,
-                        color=C_TEXT,
                         shape=ft.RoundedRectangleBorder(radius=10),
                     ),
                 ),
