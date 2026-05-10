@@ -701,6 +701,24 @@ def main(page: ft.Page):
     ai_card, ai_rw, ai_iw, ai_ic, ai_msg = _mk_conn_card(ft.Icons.SMART_TOY_OUTLINED, "IA")
     ak_card, ak_rw, ak_iw, ak_ic, ak_msg = _mk_conn_card(ft.Icons.STYLE_OUTLINED,     "Anki")
 
+    # Thread-safe UI repaint helper. Flet 0.85 silently queues control mutations
+    # made off the UI thread; without an explicit `.update()` on the affected
+    # control, the page only repaints when it receives a stray UI event (mouse
+    # move, focus change). Calling `.update()` on each touched control AND
+    # `page.update()` at the end forces an immediate paint.
+    def _safe_update(*controls):
+        for c in controls:
+            if c is None:
+                continue
+            try:
+                c.update()
+            except Exception:
+                pass
+        try:
+            page.update()
+        except Exception:
+            pass
+
     # ── Flashcard workshop animation ───────────────────────────────────────────
     _fc_shadow2 = ft.Container(
         bgcolor="#081127", border=_ball(1, f"{C_ACCENT},0.07"),
@@ -789,8 +807,8 @@ def main(page: ft.Page):
                 test_btn_ref.current.disabled = False
                 test_btn_ref.current.content  = "Testar"
                 test_btn_ref.current.icon     = ft.Icons.WIFI_ROUNDED
-            time.sleep(0.05)
-            page.update()
+            _safe_update(nc_card, ai_card, ak_card,
+                         test_btn_ref.current if test_btn_ref.current else None)
         threading.Thread(target=work, daemon=True).start()
 
     def on_sync(e):
@@ -858,7 +876,7 @@ def main(page: ft.Page):
                 # Throttle repaints: always on key events, else every 3 lines
                 line_n += 1
                 if "Flashcards" in line or line_n % 3 == 0:
-                    page.update()
+                    _safe_update(log_field, _fc_title, _fc_count)
             proc.wait()
             state["sync_running"] = False
             state["last_stats"]   = parse_stats(state["log_lines"])
@@ -882,8 +900,8 @@ def main(page: ft.Page):
                 _fc_title.value     = "Flashcards enviados ao Anki!"
                 _fc_count.value     = f"✅ {s.get('enviados', total_fc)} cartões sincronizados"
                 _fc_count.color     = C_SUCCESS
-                time.sleep(0.05)
-                page.update()
+                _safe_update(_fc_front, _fc_shadow1, _fc_shadow2,
+                             _fc_icon, _fc_title, _fc_count, result_text)
                 # Pleasant two-tone completion beep (Windows only, silent on other OS)
                 try:
                     import winsound
@@ -920,8 +938,10 @@ def main(page: ft.Page):
                 stat_card("No Anki",     s["enviados"]),
                 stat_card("Erros",       s["erros"], warn=True),
             ]
-            time.sleep(0.05)
-            page.update()
+            _safe_update(stats_row, result_text, progress_bar,
+                         _fc_front, _fc_shadow1, _fc_shadow2,
+                         _fc_icon, _fc_title, _fc_count,
+                         sync_btn_ref.current if sync_btn_ref.current else None)
         threading.Thread(target=work, daemon=True).start()
 
     def on_clear(e):
@@ -1077,7 +1097,7 @@ def main(page: ft.Page):
             _build_step4(ctrls)
 
         setup_col.controls = ctrls
-        page.update()
+        _safe_update(setup_col)
 
     # ── Step 1: Mode selection ─────────────────────────────────────────────────
     def _build_step1(ctrls):
@@ -1932,7 +1952,7 @@ def main(page: ft.Page):
                 elevation=0,
                 overlay_color="#ffffff,0.094",
             )
-            page.update()
+            _safe_update(b)
 
             def _restore():
                 time.sleep(2)
@@ -1947,7 +1967,7 @@ def main(page: ft.Page):
                         elevation=0,
                         overlay_color="#ffffff,0.094",
                     )
-                    page.update()
+                    _safe_update(b)
             threading.Thread(target=_restore, daemon=True).start()
 
     # ── Update banner (populated by background check) ──────────────────────────
@@ -1968,11 +1988,11 @@ def main(page: ft.Page):
         upd_state["info"] = info
         if not info:
             upd_card.visible = False
-            page.update()
+            _safe_update(upd_card)
             return
         if info.get("error"):
             upd_card.visible = False
-            page.update()
+            _safe_update(upd_card)
             return
         if not info.get("has_update"):
             upd_card.visible = True
@@ -1981,7 +2001,7 @@ def main(page: ft.Page):
             upd_msg.value    = f"✓ Você está na versão mais recente ({info['current']})."
             if upd_btn_ref.current:
                 upd_btn_ref.current.visible = False
-            page.update()
+            _safe_update(upd_card, upd_msg, upd_btn_ref.current)
             return
         upd_card.visible = True
         upd_card.bgcolor = f"{C_ACCENT},0.10"
@@ -1993,7 +2013,7 @@ def main(page: ft.Page):
                          f"(você tem {info['current']}).\n{notes}").strip()
         if upd_btn_ref.current:
             upd_btn_ref.current.visible = True
-        page.update()
+        _safe_update(upd_card, upd_msg, upd_btn_ref.current)
 
     def _check_updates_async(e=None):
         if upd_state["checking"]:
@@ -2006,7 +2026,7 @@ def main(page: ft.Page):
         upd_msg.value    = ""
         if upd_btn_ref.current:
             upd_btn_ref.current.visible = False
-        page.update()
+        _safe_update(upd_card, upd_status, upd_msg, upd_btn_ref.current)
 
         def work():
             try:
@@ -2026,7 +2046,7 @@ def main(page: ft.Page):
         upd_status.value = "Baixando e aplicando atualização..."
         if upd_btn_ref.current:
             upd_btn_ref.current.disabled = True
-        page.update()
+        _safe_update(upd_status, upd_btn_ref.current)
 
         def work():
             try:
@@ -2053,7 +2073,8 @@ def main(page: ft.Page):
                 if upd_btn_ref.current:
                     upd_btn_ref.current.disabled = False
                 snack(f"Falha ao atualizar: {msg}", C_ERROR)
-            page.update()
+            _safe_update(upd_card, upd_msg, upd_status,
+                         upd_btn_ref.current, upd_restart_ref.current)
         threading.Thread(target=work, daemon=True).start()
 
     upd_card = ft.Container(
