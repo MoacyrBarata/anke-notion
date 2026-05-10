@@ -57,6 +57,35 @@ class TestCheckAiKey:
         ok, _ = app.check_ai_key("gemini", "AIza")
         assert ok is False
 
+    def test_openai_valid_key(self, app):
+        ok, _ = app.check_ai_key("openai", "sk-abcdef1234567890abcdef")
+        assert ok is True
+
+    def test_openai_proj_key(self, app):
+        ok, _ = app.check_ai_key("openai", "sk-proj-abcdef1234567890abcdef")
+        assert ok is True
+
+    def test_openai_rejects_anthropic_prefix(self, app):
+        ok, _ = app.check_ai_key("openai", "sk-ant-api03-key")
+        assert ok is False
+
+    def test_openai_too_short(self, app):
+        ok, _ = app.check_ai_key("openai", "sk-short")
+        assert ok is False
+
+    def test_groq_valid_key(self, app):
+        ok, _ = app.check_ai_key("groq", "gsk_abcdef1234567890abcdef")
+        assert ok is True
+
+    def test_groq_invalid_prefix(self, app):
+        ok, _ = app.check_ai_key("groq", "sk_wrong1234567890abcdef")
+        assert ok is False
+
+    def test_unknown_provider_rejected(self, app):
+        ok, msg = app.check_ai_key("anthropic-mistral", "any-key-here-12345")
+        assert ok is False
+        assert "desconhecido" in msg.lower()
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # parse_stats

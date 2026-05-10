@@ -43,6 +43,18 @@ try:
 except ImportError:
     GOOGLE_GENAI_AVAILABLE = False
 
+try:
+    import openai as _openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+try:
+    import groq as _groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
 # ──────────────────────────────────────────────
 # Configuração
 # ──────────────────────────────────────────────
@@ -64,7 +76,12 @@ NOTION_CONFIG_FILE = ROOT / "notion_config.json"
 NOTION_TOKEN      = os.getenv("NOTION_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GEMINI_API_KEY    = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL      = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_API_KEY      = os.getenv("GROQ_API_KEY")
+GROQ_MODEL        = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "claude-opus-4-5")
 AI_PROVIDER       = os.getenv("AI_PROVIDER", "claude").lower()
 ANKI_HOST         = os.getenv("ANKI_HOST", "http://localhost:8765")
 
@@ -94,10 +111,18 @@ notion = NotionClient(auth=NOTION_TOKEN)
 
 claude_client = None
 gemini_client = None
+openai_client = None
+groq_client   = None
 
 if AI_PROVIDER == "gemini":
     if GOOGLE_GENAI_AVAILABLE and GEMINI_API_KEY:
         gemini_client = _google_genai.Client(api_key=GEMINI_API_KEY)
+elif AI_PROVIDER == "openai":
+    if OPENAI_AVAILABLE and OPENAI_API_KEY:
+        openai_client = _openai.OpenAI(api_key=OPENAI_API_KEY)
+elif AI_PROVIDER == "groq":
+    if GROQ_AVAILABLE and GROQ_API_KEY:
+        groq_client = _groq.Groq(api_key=GROQ_API_KEY)
 else:
     if ANTHROPIC_AVAILABLE and ANTHROPIC_API_KEY:
         claude_client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -403,7 +428,12 @@ ANOTAÇÃO
 
 Responda APENAS com o array JSON conforme as regras do sistema."""
 
-    provider_label = "Gemini" if AI_PROVIDER == "gemini" else "Claude"
+    provider_label = {
+        "gemini": "Gemini",
+        "openai": "ChatGPT (OpenAI)",
+        "groq":   "Groq",
+        "claude": "Claude",
+    }.get(AI_PROVIDER, "Claude")
     log.info(f"  → Enviando para {provider_label}: {len(conteudo)} caracteres "
              f"(orçamento: até {max_cards} cards)")
 
@@ -420,7 +450,6 @@ Responda APENAS com o array JSON conforme as regras do sistema."""
             try:
                 gen_cfg = _genai_types.GenerateContentConfig(**cfg_kwargs)
             except TypeError:
-                # SDK antigo sem suporte a algum parâmetro — degrada com graça.
                 gen_cfg = _genai_types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     max_output_tokens=4096,
@@ -429,9 +458,35 @@ Responda APENAS com o array JSON conforme as regras do sistema."""
                 model=GEMINI_MODEL, config=gen_cfg, contents=prompt,
             )
             raw = (resp.text or "").strip()
+        elif AI_PROVIDER == "openai":
+            resp = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system",
+                     "content": SYSTEM_PROMPT + "\n\nResponda com um objeto JSON "
+                                "que tenha a chave \"flashcards\" contendo o array."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+        elif AI_PROVIDER == "groq":
+            resp = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system",
+                     "content": SYSTEM_PROMPT + "\n\nResponda com um objeto JSON "
+                                "que tenha a chave \"flashcards\" contendo o array."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            raw = (resp.choices[0].message.content or "").strip()
         else:
             resp = claude_client.messages.create(
-                model="claude-opus-4-5",
+                model=CLAUDE_MODEL,
                 max_tokens=4096,
                 temperature=0.3,
                 system=SYSTEM_PROMPT,
@@ -441,6 +496,14 @@ Responda APENAS com o array JSON conforme as regras do sistema."""
 
         raw = _strip_code_fence(raw)
         parsed = json.loads(raw)
+        # OpenAI/Groq with response_format=json_object return {"flashcards": [...]}
+        # — unwrap the array if present.
+        if isinstance(parsed, dict):
+            for key in ("flashcards", "cards", "data", "items"):
+                val = parsed.get(key)
+                if isinstance(val, list):
+                    parsed = val
+                    break
         if not isinstance(parsed, list):
             log.error(f"  ✗ Resposta não é array JSON: {type(parsed).__name__}")
             return []
@@ -874,6 +937,21 @@ def main():
         if not gemini_client:
             log.error("❌ Falha ao inicializar Gemini.")
             return
+    elif AI_PROVIDER == "openai":
+        if not OPENAI_AVAILABLE:
+            log.error("❌ openai não instalado. Rode: pip install openai")
+            return
+        if not openai_client:
+            log.error("❌ Falha ao inicializar OpenAI (ChatGPT). "
+                      "Verifique OPENAI_API_KEY.")
+            return
+    elif AI_PROVIDER == "groq":
+        if not GROQ_AVAILABLE:
+            log.error("❌ groq não instalado. Rode: pip install groq")
+            return
+        if not groq_client:
+            log.error("❌ Falha ao inicializar Groq. Verifique GROQ_API_KEY.")
+            return
     else:
         if not ANTHROPIC_AVAILABLE:
             log.error("❌ anthropic não instalado.")
@@ -901,7 +979,11 @@ def main():
         _CURRENT_RUN_ID = sync_db.start_run(
             mode=cfg.get("mode"),
             provider=AI_PROVIDER,
-            model=GEMINI_MODEL if AI_PROVIDER == "gemini" else "claude-opus-4-5",
+            model={
+                "gemini": GEMINI_MODEL,
+                "openai": OPENAI_MODEL,
+                "groq":   GROQ_MODEL,
+            }.get(AI_PROVIDER, CLAUDE_MODEL),
         )
     except Exception as exc:
         log.warning(f"DB local indisponível ({exc}); continuando sem telemetria.")

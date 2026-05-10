@@ -16,3 +16,9 @@ anthropic==0.99.0
 
 # IA — Gemini (AI_PROVIDER=gemini)
 google-genai==1.75.0
+
+# IA — OpenAI / ChatGPT (AI_PROVIDER=openai)
+openai>=1.50.0
+
+# IA — Groq (AI_PROVIDER=groq) — free tier com Llama/Mixtral
+groq>=0.11.0

@@ -97,8 +97,16 @@ def check_ai_key(provider: str, key: str) -> tuple[bool, str]:
     if provider == "claude":
         ok = key.startswith("sk-ant-")
         return ok, "Formato válido" if ok else "Esperado: sk-ant-..."
-    ok = key.startswith("AIza") and len(key) > 20
-    return ok, "Formato válido" if ok else "Esperado: AIza..."
+    if provider == "gemini":
+        ok = key.startswith("AIza") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: AIza..."
+    if provider == "openai":
+        ok = key.startswith("sk-") and not key.startswith("sk-ant-") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: sk-... (OpenAI)"
+    if provider == "groq":
+        ok = key.startswith("gsk_") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: gsk_..."
+    return False, f"Provedor desconhecido: {provider}"
 
 
 def list_notion_databases(token: str) -> list[dict]:

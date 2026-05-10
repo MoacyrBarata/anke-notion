@@ -102,8 +102,17 @@ def check_ai_key(provider: str, key: str):
     if provider == "claude":
         ok = key.startswith("sk-ant-")
         return ok, "Formato válido" if ok else "Esperado: sk-ant-..."
-    ok = key.startswith("AIza") and len(key) > 20
-    return ok, "Formato válido" if ok else "Esperado: AIza..."
+    if provider == "gemini":
+        ok = key.startswith("AIza") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: AIza..."
+    if provider == "openai":
+        # OpenAI keys: "sk-..." ou "sk-proj-..." — never "sk-ant-".
+        ok = key.startswith("sk-") and not key.startswith("sk-ant-") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: sk-... (OpenAI)"
+    if provider == "groq":
+        ok = key.startswith("gsk_") and len(key) > 20
+        return ok, "Formato válido" if ok else "Esperado: gsk_..."
+    return False, f"Provedor desconhecido: {provider}"
 
 
 # ── Notion API ─────────────────────────────────────────────────────────────────
@@ -444,11 +453,13 @@ def main(page: ft.Page):
     )
 
     # ── Shared setting fields ──────────────────────────────────────────────────
-    f_token   = field("Notion Token",      cfg.get("NOTION_TOKEN", ""),          password=True, hint="secret_...")
-    f_ant_key = field("Anthropic API Key", cfg.get("ANTHROPIC_API_KEY", ""),     password=True, hint="sk-ant-...")
-    f_gem_key = field("Gemini API Key",    cfg.get("GEMINI_API_KEY", ""),        password=True, hint="AIza...")
-    f_host    = field("Anki Host",         cfg.get("ANKI_HOST", "http://localhost:8765"))
-    f_cards   = field("Máx. flashcards",   cfg.get("MAX_FLASHCARDS_POR_AULA", "10"), width=140)
+    f_token    = field("Notion Token",       cfg.get("NOTION_TOKEN", ""),          password=True, hint="secret_...")
+    f_ant_key  = field("Anthropic API Key",  cfg.get("ANTHROPIC_API_KEY", ""),     password=True, hint="sk-ant-...")
+    f_gem_key  = field("Gemini API Key",     cfg.get("GEMINI_API_KEY", ""),        password=True, hint="AIza...")
+    f_oai_key  = field("OpenAI API Key",     cfg.get("OPENAI_API_KEY", ""),        password=True, hint="sk-...")
+    f_groq_key = field("Groq API Key",       cfg.get("GROQ_API_KEY", ""),          password=True, hint="gsk_...")
+    f_host     = field("Anki Host",          cfg.get("ANKI_HOST", "http://localhost:8765"))
+    f_cards    = field("Máx. flashcards",    cfg.get("MAX_FLASHCARDS_POR_AULA", "10"), width=140)
 
     GEMINI_MODELS = [
         ("gemini-2.5-flash",          "gemini-2.5-flash · 🆓 Grátis (recomendado)"),
@@ -471,64 +482,164 @@ def main(page: ft.Page):
                 color=C_DIM, size=11, expand=True),
     ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    _init_provider = cfg.get("AI_PROVIDER", "claude")
-    ant_key_wrap = ft.Container(
-        content=ft.Column([
-            f_ant_key,
-            ft.Container(height=4),
-            ft.Row([
-                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
-                ft.Text("Claude é pago (Anthropic) · Sem free tier",
-                        color=C_DIM, size=11, expand=True),
-            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-        ], spacing=2, tight=True),
-        visible=(_init_provider == "claude"),
+    OPENAI_MODELS = [
+        ("gpt-4o-mini",  "gpt-4o-mini · 💳 Pago (barato, recomendado)"),
+        ("gpt-4o",       "gpt-4o · 💳 Pago (qualidade alta)"),
+        ("gpt-4.1-mini", "gpt-4.1-mini · 💳 Pago"),
+        ("gpt-4.1",      "gpt-4.1 · 💳 Pago"),
+        ("o3-mini",      "o3-mini · 💳 Pago (raciocínio)"),
+    ]
+    oai_model_dd = dropdown(
+        "Modelo OpenAI",
+        OPENAI_MODELS,
+        value=cfg.get("OPENAI_MODEL", "gpt-4o-mini"),
     )
-    gem_key_wrap = ft.Container(
-        content=ft.Column([
-            f_gem_key,
-            ft.Container(height=4),
-            ft.Row([
-                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
-                ft.Text("Gemini tem free tier nos modelos 2.5 (≈15 req/min, 1500/dia)",
-                        color=C_DIM, size=11, expand=True),
-            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Container(height=8),
-            gem_model_dd,
-            ft.Container(height=4),
-            gem_model_hint,
-        ], spacing=2, tight=True),
-        visible=(_init_provider == "gemini"),
+
+    GROQ_MODELS = [
+        ("llama-3.3-70b-versatile",        "llama-3.3-70b-versatile · 🆓 Grátis (recomendado)"),
+        ("llama-3.1-8b-instant",           "llama-3.1-8b-instant · 🆓 Grátis (rápido)"),
+        ("mixtral-8x7b-32768",             "mixtral-8x7b-32768 · 🆓 Grátis (contexto longo)"),
+        ("deepseek-r1-distill-llama-70b",  "deepseek-r1-distill-llama-70b · 🆓 Grátis (raciocínio)"),
+        ("gemma2-9b-it",                   "gemma2-9b-it · 🆓 Grátis (leve)"),
+    ]
+    groq_model_dd = dropdown(
+        "Modelo Groq",
+        GROQ_MODELS,
+        value=cfg.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     )
+
+    CLAUDE_MODELS = [
+        ("claude-opus-4-5",   "claude-opus-4-5 · 💳 Pago (melhor)"),
+        ("claude-sonnet-4-5", "claude-sonnet-4-5 · 💳 Pago (equilibrado)"),
+        ("claude-haiku-4-5",  "claude-haiku-4-5 · 💳 Pago (rápido)"),
+    ]
+    claude_model_dd = dropdown(
+        "Modelo Claude",
+        CLAUDE_MODELS,
+        value=cfg.get("CLAUDE_MODEL", "claude-opus-4-5"),
+    )
+
+    _init_provider = cfg.get("AI_PROVIDER", "gemini")
+
+    def _key_wrap(field_widget, hint_text, *extras):
+        return ft.Container(
+            content=ft.Column([
+                field_widget,
+                ft.Container(height=4),
+                ft.Row([
+                    ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
+                    ft.Text(hint_text, color=C_DIM, size=11, expand=True),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                *extras,
+            ], spacing=2, tight=True),
+            visible=False,
+        )
+
+    ant_key_wrap = _key_wrap(
+        f_ant_key,
+        "Claude é pago (Anthropic) · Sem free tier",
+        ft.Container(height=8), claude_model_dd,
+    )
+    gem_key_wrap = _key_wrap(
+        f_gem_key,
+        "Gemini tem free tier nos modelos 2.5 (≈15 req/min, 1500/dia)",
+        ft.Container(height=8), gem_model_dd,
+        ft.Container(height=4), gem_model_hint,
+    )
+    oai_key_wrap = _key_wrap(
+        f_oai_key,
+        "OpenAI / ChatGPT é pago · gpt-4o-mini é barato e suficiente",
+        ft.Container(height=8), oai_model_dd,
+    )
+    groq_key_wrap = _key_wrap(
+        f_groq_key,
+        "Groq tem free tier generoso · ~30 req/min · Llama 3.3 70B grátis",
+        ft.Container(height=8), groq_model_dd,
+    )
+
+    _PROVIDER_WRAPS = {
+        "claude": ant_key_wrap,
+        "gemini": gem_key_wrap,
+        "openai": oai_key_wrap,
+        "groq":   groq_key_wrap,
+    }
+    # Show the wrap for the initial provider.
+    if _init_provider in _PROVIDER_WRAPS:
+        _PROVIDER_WRAPS[_init_provider].visible = True
 
     def _on_provider_change(e):
-        is_gemini = e.control.value == "gemini"
-        ant_key_wrap.visible = not is_gemini
-        gem_key_wrap.visible = is_gemini
+        chosen = e.control.value
+        for name, wrap in _PROVIDER_WRAPS.items():
+            wrap.visible = (name == chosen)
         page.update()
 
-    def _prov_card(value, label, tag, tag_color):
+    # Free-only filter: hides paid providers when toggled on.
+    _PROVIDER_TIERS = {
+        "claude": "paid",
+        "openai": "paid",
+        "gemini": "free",
+        "groq":   "free",
+    }
+    free_only_switch = ft.Switch(
+        value=False,
+        active_color=C_SUCCESS,
+        label="🆓 Mostrar apenas opções grátis",
+        label_text_style=ft.TextStyle(color=C_DIM, size=12),
+    )
+
+    def _prov_card(value, label, tag, tag_color, icon=None):
         return ft.Container(
             content=ft.Row([
                 ft.Radio(value=value, fill_color=C_ACCENT),
+                *( [ft.Icon(icon, color=tag_color, size=18)] if icon else [] ),
                 ft.Column([
                     ft.Text(label, color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
                     ft.Text(tag, color=tag_color, size=11),
                 ], spacing=2, expand=True),
-            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=C_GLASS, border=_ball(1, C_BORDER),
-            border_radius=10, padding=ft.padding.Padding(left=10, right=12, top=8, bottom=8),
+            border_radius=10, padding=ft.padding.Padding(left=10, right=12, top=10, bottom=10),
             expand=True,
+            data=value,  # used by free filter to find the card
         )
+
+    card_claude = _prov_card("claude", "Claude",  "💳 Pago — Anthropic",     C_WARNING,
+                             ft.Icons.AUTO_AWESOME_ROUNDED)
+    card_gemini = _prov_card("gemini", "Gemini",  "🆓 Free tier — Google",   C_SUCCESS,
+                             ft.Icons.STAR_ROUNDED)
+    card_openai = _prov_card("openai", "ChatGPT", "💳 Pago — OpenAI",        C_WARNING,
+                             ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED)
+    card_groq   = _prov_card("groq",   "Groq",    "🆓 Free tier — Llama/Mixtral", C_SUCCESS,
+                             ft.Icons.BOLT_ROUNDED)
+
+    _PROVIDER_CARDS = {
+        "claude": card_claude,
+        "gemini": card_gemini,
+        "openai": card_openai,
+        "groq":   card_groq,
+    }
 
     prov_radio = ft.RadioGroup(
         value=_init_provider,
         on_change=_on_provider_change,
-        content=ft.Row([
-            _prov_card("claude", "Claude", "💳 Pago — Anthropic",            C_WARNING),
-            _prov_card("gemini", "Gemini", "🆓 Free tier — Google AI Studio", C_SUCCESS),
+        content=ft.Column([
+            ft.Row([card_gemini, card_groq],   spacing=10),
+            ft.Row([card_claude, card_openai], spacing=10),
         ], spacing=10),
     )
+
+    def _on_free_filter_toggle(e=None):
+        free_only = bool(free_only_switch.value)
+        for name, card in _PROVIDER_CARDS.items():
+            is_free = _PROVIDER_TIERS.get(name) == "free"
+            card.visible = (is_free or not free_only)
+        # If selected provider is hidden by filter, jump to first visible free one.
+        if free_only and _PROVIDER_TIERS.get(prov_radio.value) == "paid":
+            prov_radio.value = "gemini"
+            for n, w in _PROVIDER_WRAPS.items():
+                w.visible = (n == "gemini")
+        page.update()
+    free_only_switch.on_change = _on_free_filter_toggle
 
     # ── Snackbar ───────────────────────────────────────────────────────────────
     def snack(msg, color=C_SUCCESS):
@@ -637,9 +748,14 @@ def main(page: ft.Page):
     save_cfg_btn_ref = ft.Ref[ft.Button]()
 
     def get_key_and_prov():
-        p = prov_radio.value or "claude"
-        k = f_ant_key.value if p == "claude" else f_gem_key.value
-        return k, p
+        p = prov_radio.value or "gemini"
+        key_map = {
+            "claude": f_ant_key,
+            "gemini": f_gem_key,
+            "openai": f_oai_key,
+            "groq":   f_groq_key,
+        }
+        return (key_map.get(p, f_gem_key).value or ""), p
 
     def on_test(e):
         if test_btn_ref.current:
@@ -712,8 +828,13 @@ def main(page: ft.Page):
             "NOTION_TOKEN":            f_token.value,
             "AI_PROVIDER":             prov_radio.value,
             "ANTHROPIC_API_KEY":       f_ant_key.value,
+            "CLAUDE_MODEL":            claude_model_dd.value,
             "GEMINI_API_KEY":          f_gem_key.value,
             "GEMINI_MODEL":            gem_model_dd.value,
+            "OPENAI_API_KEY":          f_oai_key.value,
+            "OPENAI_MODEL":            oai_model_dd.value,
+            "GROQ_API_KEY":            f_groq_key.value,
+            "GROQ_MODEL":              groq_model_dd.value,
             "ANKI_HOST":               f_host.value,
             "MAX_FLASHCARDS_POR_AULA": f_cards.value or "10",
         }
@@ -1787,8 +1908,13 @@ def main(page: ft.Page):
             "NOTION_TOKEN":            f_token.value,
             "AI_PROVIDER":             prov_radio.value,
             "ANTHROPIC_API_KEY":       f_ant_key.value,
+            "CLAUDE_MODEL":            claude_model_dd.value,
             "GEMINI_API_KEY":          f_gem_key.value,
             "GEMINI_MODEL":            gem_model_dd.value,
+            "OPENAI_API_KEY":          f_oai_key.value,
+            "OPENAI_MODEL":            oai_model_dd.value,
+            "GROQ_API_KEY":            f_groq_key.value,
+            "GROQ_MODEL":              groq_model_dd.value,
             "ANKI_HOST":               f_host.value,
             "MAX_FLASHCARDS_POR_AULA": f_cards.value,
         })
@@ -1991,12 +2117,18 @@ def main(page: ft.Page):
         ], spacing=4)),
         ft.Container(height=10),
         glass(ft.Column([
-            dim("INTELIGÊNCIA ARTIFICIAL", size=10, color=C_MUTED),
+            ft.Row([
+                ft.Text("INTELIGÊNCIA ARTIFICIAL", size=10, color=C_MUTED,
+                        expand=True),
+                free_only_switch,
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ft.Container(height=8),
             prov_radio,
             ft.Container(height=8),
             ant_key_wrap,
             gem_key_wrap,
+            oai_key_wrap,
+            groq_key_wrap,
         ], spacing=4)),
         ft.Container(height=10),
         glass(ft.Column([
