@@ -1222,9 +1222,18 @@ with tab_setup:
             """, unsafe_allow_html=True)
         with col2:
             if st.button("🔄 Reconfigurar", use_container_width=True):
-                st.session_state.notion_dbs = None
-                st.session_state.setup_step = 1
-                st.rerun()
+                try:
+                    if NOTION_CFG_FILE.exists():
+                        NOTION_CFG_FILE.unlink()
+                except Exception as exc:
+                    st.error(f"Falha ao remover config: {exc}")
+                else:
+                    for k in ("notion_dbs", "setup_parent_db_id",
+                              "setup_parent_db_name", "setup_child_props"):
+                        st.session_state[k] = None
+                    st.session_state.setup_step = 1
+                    st.success("Configuração apagada.")
+                    st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════════

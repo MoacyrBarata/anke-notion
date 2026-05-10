@@ -35,15 +35,21 @@ anke-notion/
 ├── launcher.py            ← Instalador + launcher cross-platform (UI principal = Flet)
 ├── app_flet.py            ← Interface Flet (UI **principal** — usada pelo launcher)
 ├── app.py                 ← Interface Streamlit (alternativa, opcional)
+├── LICENSE                ← MIT (Moacyr Barata, 2026)
 ├── ui_components.py       ← Paleta de cores e factories de widgets (Flet)
 ├── notion_helpers.py      ← Helpers Notion (HTTP) + sugestão de campos + sample page
 ├── notion_anki_sync.py    ← Motor de sincronização (core, roda como subprocess)
+├── db.py                  ← SQLite local (histórico de sync + telemetria de runs)
+├── updater.py             ← Auto-update via GitHub (git pull ou zip + backup/rollback)
+├── VERSION                ← Versão semver atual (lida pelo updater)
 ├── _test_notion.py        ← Sandbox manual para testar Notion API (não é teste pytest)
 ├── requirements.txt       ← Dependências Python
 ├── requirements-dev.txt   ← Dependências de desenvolvimento/testes
 ├── .env                   ← Credenciais runtime (NÃO versionado)
 ├── env.example            ← Template do .env
 ├── notion_config.json     ← Config da estrutura Notion (NÃO versionado, gerado pelo app)
+├── sync_history.db        ← SQLite local — histórico (NÃO versionado)
+├── .update_backup/        ← Backups por timestamp do updater (NÃO versionado)
 ├── icon.svg               ← Ícone fonte (versionado)
 ├── icon.png               ← Ícone gerado pelo launcher (NÃO versionado)
 ├── sync.log               ← Log da última sincronização (NÃO versionado)
@@ -54,6 +60,8 @@ anke-notion/
     ├── test_app_helpers.py     ← Testes dos helpers do app Streamlit
     ├── test_flet_helpers.py    ← Testes dos helpers do app Flet
     ├── test_flet_views.py      ← Testes integração da view Flet
+    ├── test_db.py              ← Testes do SQLite local (db.py)
+    ├── test_updater.py         ← Testes do auto-updater
     └── test_launcher.py        ← Testes do launcher
 ```
 
@@ -121,23 +129,28 @@ app_flet.py  →  subprocess.Popen([venv/python, notion_anki_sync.py])
 notion_anki_sync.py
     ├─ load_dotenv()
     ├─ load_notion_config()  ← notion_config.json
+    ├─ sync_db.init_db()     ← garante schema sync_history.db
+    ├─ run_id = sync_db.start_run(mode, provider, model)
     │
     ├─ MODO "hierarchical":
     │   ├─ query_database_all(parent_db_id)  ← lista categorias (data_source)
     │   └─ para cada categoria:
     │       ├─ find_child_database(page_id, keyword)  → data_source_id
     │       ├─ query_database_all(child_db_id, filter)
+    │       ├─ _filter_locally_pending(itens) ← descarta já sincronizados (DB local)
     │       └─ para cada item pendente:
     │           ├─ get_page_content() + get_rich_text_value()
     │           ├─ gerar_flashcards()  → Claude ou Gemini
     │           ├─ adicionar_nota()  → AnkiConnect
-    │           └─ marcar_sincronizado()  → Notion
+    │           ├─ marcar_sincronizado() → Notion (opcional)
+    │           └─ sync_db.record_sync(...)  ← grava status (success/error/skipped)
     │
     ├─ MODO "flat":
     │   └─ para cada DB em selected_dbs (lista de {id, name}):
     │       └─ query_database_all(db_id, filter)
-    │           └─ mesma pipeline por item
+    │           └─ _filter_locally_pending → mesma pipeline por item
     │
+    ├─ sync_db.finish_run(run_id, status, totais...)
     └─ save_notion_config()  ← atualiza last_sync_time
 ```
 
@@ -187,7 +200,9 @@ Motor de sincronização. **Pode rodar standalone:** `python notion_anki_sync.py
 | `processar_hierarquico` | `(cfg) → dict` | Pipeline modo hierárquico; retorna stats |
 | `processar_plano` | `(cfg) → dict` | Pipeline modo plano; itera `selected_dbs`; retorna stats |
 | `_processar_db_plano` | `(db_id, db_name, cfg, total)` | Helper interno: processa um único data_source no modo plano |
-| `main` | `()` | Valida conexões, carrega config, despacha pipeline, salva timestamp |
+| `_filter_locally_pending` | `(itens) → (list, int)` | Descarta páginas já sincronizadas localmente e inalteradas; retorna (pendentes, contagem-pulada) |
+| `_record` | `(page, db_id, db_name, title, category, status, …)` | Grava o resultado de um item no `sync_history.db` (run_id atual) |
+| `main` | `()` | Valida conexões, carrega config, abre run no DB, despacha pipeline, finaliza run, salva timestamp |
 
 ### Formato de `notion_config.json`
 
@@ -217,6 +232,185 @@ Motor de sincronização. **Pode rodar standalone:** `python notion_anki_sync.py
 
 ---
 
+## Arquivo: `db.py` (SQLite local)
+
+Banco local de telemetria + histórico. Stdlib `sqlite3` apenas — funciona em
+**Windows / Linux / macOS** sem dependências extras. Arquivo único:
+`sync_history.db` na raiz do projeto.
+
+### Por que existe
+
+1. **Idempotência local** — `is_synced(page_id, last_edited_time)` retorna True
+   se a página tem sync bem-sucedido **e** não foi editada desde então.
+   Permite detectar mudanças mesmo quando o usuário não usa campo no Notion.
+2. **Telemetria de runs** — `sync_runs` registra cada execução (modo,
+   provider, modelo, totais, status), expostos na aba "Histórico" do app.
+3. **Independência do Notion** — se a API do Notion mudar/quebrar de novo
+   (como aconteceu com `data_sources`), o histórico continua acessível.
+4. **Re-sync seletivo** — `mark_pending(page_id)` apaga histórico de uma
+   página específica para forçar re-processamento na próxima execução.
+
+### Schema (`SCHEMA_VERSION = 1`)
+
+```sql
+schema_version (version PK)
+
+sync_runs (
+    id PK, started_at, finished_at, mode, provider, model,
+    items_processed, cards_generated, cards_inserted, errors,
+    status,             -- 'running' | 'success' | 'error'
+    log_excerpt
+)
+
+sync_history (
+    id PK, page_id, db_id, db_name, title, category,
+    synced_at, page_last_edited_at,
+    cards_generated, cards_inserted,
+    status,             -- 'success' | 'error' | 'skipped'
+    error_msg, retry_count, run_id FK→sync_runs(id)
+)
+```
+
+Indexes em `sync_history(page_id)`, `(status)`, `(synced_at DESC)`, `(db_id)`.
+
+### API pública
+
+| Função | Uso |
+|---|---|
+| `init_db()` | Cria schema se ausente. Idempotente. Chamar em todo entrypoint |
+| `start_run(mode, provider, model) → int` | Abre run; retorna `run_id` |
+| `finish_run(run_id, status, totais...)` | Fecha run com totais agregados |
+| `record_sync(page_id, db_id, …, status)` | Grava resultado de 1 item; `retry_count` é auto-calculado |
+| `is_synced(page_id, page_last_edited_at) → bool` | True se sync ok e não editado depois |
+| `get_last_success(page_id) → dict \| None` | Última execução bem-sucedida da página |
+| `list_history(limit=50, status?, db_id?) → list[dict]` | Histórico com filtros opcionais |
+| `list_runs(limit=20) → list[dict]` | Runs ordenadas desc |
+| `mark_pending(page_id) → int` | Apaga histórico de 1 página (força re-sync) |
+| `mark_all_pending(db_id?) → int` | Apaga histórico (global ou por DB) |
+| `get_stats(days=30) → dict` | Agregação: attempts, successes, errors, cards, runs |
+| `filter_pending(pages) → list[dict]` | Helper: descarta páginas já sincronizadas |
+
+Datas são ISO8601 UTC. `_parse_iso` aceita sufixo `Z` (formato Notion) e
+`+00:00`. Conexão usa `isolation_level=None` (autocommit) e `PRAGMA
+foreign_keys = ON`. Sem WAL — single-writer sempre.
+
+### Localização cross-platform
+
+`DB_FILE = ROOT / "sync_history.db"` — mesmo diretório do projeto em todos os
+SOs. Sem caminhos especiais por plataforma. `sqlite3` é stdlib em todas as
+distribuições oficiais de Python. `Path` usado em vez de strings.
+
+### Migrações futuras
+
+Bump `SCHEMA_VERSION` e adicione branch em `init_db()` que aplica `ALTER`s
+quando `row['version'] < SCHEMA_VERSION`. Hoje não há migrations (v1).
+
+---
+
+## Arquivo: `updater.py` (auto-update via GitHub)
+
+Mecanismo de atualização in-app. Funciona em **Windows / Linux / macOS** sem
+deps extras (só stdlib: `urllib`, `subprocess`, `zipfile`, `shutil`).
+
+### Repo de origem
+
+`REPO = "MoacyrBarata/anke-notion"` (público). Para forkar e usar em outro
+repo, basta editar `REPO` e `BRANCH` no topo do arquivo.
+
+### Detecção de versão remota
+
+Estratégia em cascata, executada em `get_remote_version()`:
+
+1. `GET https://api.github.com/repos/{REPO}/releases/latest` — se houver tag
+   de release, usa `tag_name` como versão. **Recomendado:** mantenha tags
+   semver (ex: `v0.2.0`) para que o usuário veja versões legíveis.
+2. Se não há release, cai para
+   `GET /repos/{REPO}/commits/{BRANCH}` — usa SHA curto (7 chars) como
+   "versão". `has_update` vira True sempre que SHA difere do local.
+
+### Comparação de versão
+
+`_is_newer(remote, local)`:
+- Se ambos são semver válidos → compara como tupla `(major, minor, patch)`.
+- Se algum lado não-parseável (SHA) → string-diff. Qualquer diferença =
+  newer. Trade-off: usuário com VERSION="0.2.0" sempre verá update quando
+  remoto é SHA, pois nunca empata.
+
+### Estratégias de aplicação
+
+`apply_update(strategy="auto" | "git" | "zip")`:
+
+| Estratégia | Pré-requisitos | Mecanismo |
+|---|---|---|
+| `git` | `git` no PATH **+** `.git/` existe **+** árvore limpa | `git fetch origin {BRANCH}` → `git reset --hard origin/{BRANCH}` |
+| `zip` | nenhum (stdlib only) | Download `https://codeload.github.com/{REPO}/zip/refs/heads/{BRANCH}` → backup → unpack |
+| `auto` | — | Tenta `git` primeiro; se falhar (ex: árvore suja), cai para `zip` |
+
+### Backup e rollback (estratégia zip)
+
+Antes de tocar qualquer arquivo, `_backup_tree()` copia o estado atual para
+`.update_backup/<timestamp_UTC>/`. Se a aplicação do zip falhar, o updater
+chama `_restore_tree()` automaticamente. Para rollback manual:
+
+```python
+import updater
+backups = updater.list_backups()       # mais recente primeiro
+ok, msg = updater.rollback(backups[0])
+```
+
+A estratégia `git` não usa esse diretório — rollback é via
+`git reset --hard <pre_sha>`.
+
+### Arquivos NUNCA tocados (`_USER_DATA`)
+
+Whitelist hardcoded no `updater.py`:
+```
+.env, notion_config.json, sync_history.db (+ -wal/-shm/-journal),
+icon.png, sync.log, streamlit_server.log, .venv, .update_backup,
+.git, __pycache__
+```
+
+Tanto o `_backup_tree` quanto o `_apply_update_zip` pulam estes paths
+explicitamente. Adicionar novos arquivos de estado do usuário? Atualize
+`_USER_DATA` antes de fazer release — caso contrário usuários perderão
+dados ao atualizar.
+
+### Migrations pós-update
+
+`_post_update_migrations()` roda após apply OK:
+- `db.init_db()` — schema SQLite criado/atualizado idempotentemente.
+- (Futuro) detectar mudanças em `requirements.txt` e disparar re-install.
+
+### Restart
+
+O updater **não reinicia o processo**. Após `apply_update` retornar OK, o
+caller (UI) deve mostrar um banner "Reinicie o app". Razão: matar o próprio
+processo Python de forma confiável cross-platform com janela GUI ativa é
+frágil; o launcher cuida de relançar quando o usuário fechar e reabrir.
+
+### Política de versionamento
+
+- Bumpe `VERSION` (semver) em todo PR mergeado em `main`.
+- Para releases publicadas, crie tag `vX.Y.Z` no GitHub (UI ou
+  `git tag vX.Y.Z && git push --tags`). Isso ativa o caminho via
+  `releases/latest` e dá ao usuário diff de release notes.
+- Schema `notion_config.json`: bumpe `"version"` e adicione migration em
+  `load_notion_config()` quando mudar layout.
+- Schema SQLite: bumpe `db.SCHEMA_VERSION` e adicione branch em
+  `init_db()` aplicando `ALTER`s.
+
+### UI integrada (`app_flet.py`)
+
+- Background thread em `main()` chama `updater.check_for_update()` ao
+  iniciar; se `has_update`, dispara `snack` + popula `upd_card` na aba
+  Configurações.
+- Banner mostra: versão atual, versão remota, notas (até 140 chars).
+- Botão "↻ Verificar" — força re-check sob demanda.
+- Botão "Atualizar agora" — chama `apply_update("auto")` em thread, mostra
+  resultado no próprio card. Em caso de sucesso: snack pedindo restart.
+
+---
+
 ## Arquivo: `app_flet.py` (UI principal)
 
 Interface Flet (janela nativa). **Não importa `notion_anki_sync`** — usa
@@ -231,8 +425,9 @@ top-level.
 | HTTP checkers | `check_notion`, `check_anki`, `check_ai_key` |
 | Notion discovery | `_notion_get`, `list_notion_databases`, `get_database_properties`, `get_db_title`, `props_by_type`, `suggest_fields`, `get_sample_page`, `extract_prop_text` |
 | Subprocess | `run_sync` (spawna `notion_anki_sync.py`), `parse_stats` (parseia log) |
-| `main(page)` | Aplica tema (paleta blue-shifted), monta NavigationRail + 4 views, registra `on_resized` para layout responsivo |
-| Views | `view_sync`, `setup_col` (wizard 4 passos), `view_settings`, `view_help` |
+| `main(page)` | Aplica tema (paleta blue-shifted), monta NavigationRail + 5 views, registra `on_resized` para layout responsivo |
+| Views | `view_sync`, `setup_col` (wizard 4 passos), `view_history`, `view_settings`, `view_help` |
+| Histórico | `_refresh_history` lê `sync_db`, popula `history_stats_row` e `history_list_col`. Filtros por status. Botão "↻ Re-sync" por linha (`sync_db.mark_pending`) e "🗑 Apagar histórico" global (`mark_all_pending`) |
 
 ### Layout responsivo
 
@@ -454,6 +649,7 @@ Executar: `.venv/Scripts/python.exe -m pytest tests/ -v`
 | `tests/test_app_helpers.py` | Helpers do app Streamlit (`parse_stats`, `check_ai_key`, `props_by_type`, `get_db_title`) |
 | `tests/test_flet_helpers.py` | Helpers do app Flet (`save_cfg`, `load_cfg`, `parse_stats`) |
 | `tests/test_flet_views.py` | Smoke tests da `app_flet.main(page)` (estrutura de controles, navigation) |
+| `tests/test_db.py` | SQLite local — schema, `record_sync`, `is_synced`, retry_count, filtros, `mark_pending`, `get_stats`, `filter_pending` |
 | `tests/test_launcher.py` | Utilitários do launcher (detecção de OS, contagem de pacotes, credentials) |
 
 Testes de integração com Notion, IA e Anki **não estão incluídos** — requerem
@@ -489,6 +685,16 @@ credenciais reais. Use `_test_notion.py` como sandbox manual.
   `databases.query` (removido em notion-client v3.0). O wrapper
   `query_database_all` em `notion_anki_sync.py` tem fallback para database_id
   legacy, mas novas escritas devem usar data_source_id direto.
+
+- **Filtragem de pendentes** agora é em duas camadas:
+  1. **Notion-side filter** (opcional) — campo select `Sincronização != ✅
+     Sincronizado` + status (se configurado).
+  2. **Local DB filter** (`_filter_locally_pending` →
+     `sync_db.filter_pending`) — descarta páginas com sync bem-sucedido cujo
+     `last_edited_time` é ≤ `synced_at` local.
+  Para forçar re-sync de uma página específica use `sync_db.mark_pending(pid)`
+  (ou o botão "↻ Re-sync" na aba Histórico). Para resetar tudo:
+  `sync_db.mark_all_pending()`.
 
 - Layout responsivo de `app_flet.py`: `_apply_layout(width)` é idempotente
   (early-return se mode não mudou). Mudar o breakpoint requer atualizar

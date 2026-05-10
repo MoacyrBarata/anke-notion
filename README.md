@@ -238,11 +238,27 @@ Isso só precisa ser feito uma vez.
 | `start.command` | Inicializador para macOS (duplo clique) |
 | `start.sh` | Inicializador para Linux |
 | `launcher.py` | Lógica do instalador e launcher |
-| `app.py` | Interface web (Streamlit) |
+| `app_flet.py` | Interface principal (Flet — janela nativa) |
+| `app.py` | Interface alternativa (Streamlit) |
+| `ui_components.py` | Paleta de cores e factories de widgets (Flet) |
+| `notion_helpers.py` | Helpers Notion compartilhados |
 | `notion_anki_sync.py` | Motor de sincronização |
+| `db.py` | Banco SQLite local (histórico de sincronização) |
+| `updater.py` | Mecanismo de auto-atualização via GitHub |
+| `VERSION` | Versão atual do app (semver) |
 | `requirements.txt` | Dependências Python |
 | `env.example` | Modelo de configuração |
 | `.env` | Suas credenciais (**não compartilhe**) |
 | `notion_config.json` | Configuração da estrutura Notion (**gerado pelo app**) |
+| `sync_history.db` | Histórico SQLite local (**gerado pelo app**) |
 | `sync.log` | Log gerado a cada sincronização |
 | `icon.png` | Ícone do app (**gerado automaticamente**) |
+
+---
+
+## Licença
+
+[MIT](LICENSE) — Copyright (c) 2026 Moacyr Barata.
+
+Você pode usar, modificar, distribuir e até comercializar o software, desde
+que mantenha o aviso de copyright. Sem garantias.

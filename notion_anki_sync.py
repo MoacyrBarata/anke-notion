@@ -28,6 +28,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from notion_client import Client as NotionClient
 
+import db as sync_db
+
 try:
     import anthropic as _anthropic
     ANTHROPIC_AVAILABLE = True
@@ -443,6 +445,37 @@ def anki_disponivel() -> bool:
 
 
 # ──────────────────────────────────────────────
+# Helpers — Local DB (sync_history)
+# ──────────────────────────────────────────────
+
+# Set by main() at the start of each run; consumed by _record() helpers.
+_CURRENT_RUN_ID: int | None = None
+
+
+def _record(page: dict, db_id: str, db_name: str, title: str,
+            category: str | None, status: str,
+            cards_generated: int = 0, cards_inserted: int = 0,
+            error_msg: str | None = None) -> None:
+    try:
+        sync_db.record_sync(
+            page_id=page["id"], db_id=db_id, db_name=db_name,
+            title=title, category=category,
+            page_last_edited_at=page.get("last_edited_time"),
+            cards_generated=cards_generated, cards_inserted=cards_inserted,
+            status=status, error_msg=error_msg, run_id=_CURRENT_RUN_ID,
+        )
+    except Exception as exc:
+        log.warning(f"Falha ao gravar histórico local: {exc}")
+
+
+def _filter_locally_pending(itens: list[dict]) -> tuple[list[dict], int]:
+    """Remove pages already synced (locally) and unedited since.
+    Returns (pending, skipped_count)."""
+    pending = sync_db.filter_pending(itens)
+    return pending, len(itens) - len(pending)
+
+
+# ──────────────────────────────────────────────
 # Pipeline — modo hierárquico
 # (DB pai contém páginas, cada página tem child DB)
 # ──────────────────────────────────────────────
@@ -507,6 +540,12 @@ def processar_hierarquico(cfg: dict) -> dict:
         if not use_sync_field and last_sync_time:
             itens = [i for i in itens if is_newer_than(i, last_sync_time)]
 
+        # 5. Filtro local — descarta páginas já sincronizadas localmente e
+        #    inalteradas desde então (independente do estado no Notion).
+        itens, skipped = _filter_locally_pending(itens)
+        if skipped:
+            log.info(f"  → {skipped} item(s) pulado(s) (já sincronizados localmente)")
+
         if not itens:
             log.info("  → Nenhum item pendente.")
             continue
@@ -535,6 +574,8 @@ def processar_hierarquico(cfg: dict) -> dict:
 
             if not conteudo.strip():
                 log.info("    → Sem conteúdo. Pulando.")
+                _record(item, child_db_id, nome_categoria, titulo, nome_categoria,
+                        "skipped", error_msg="sem conteúdo")
                 continue
 
             total["itens"] += 1
@@ -547,6 +588,9 @@ def processar_hierarquico(cfg: dict) -> dict:
                 if use_sync_field and child_sync_prop:
                     marcar_sincronizado(item["id"], child_sync_prop, "❌ Erro")
                 total["erros"] += 1
+                _record(item, child_db_id, nome_categoria, titulo, nome_categoria,
+                        "error", cards_generated=0, cards_inserted=0,
+                        error_msg="IA não retornou flashcards válidos")
                 continue
 
             # Envia ao Anki
@@ -561,6 +605,8 @@ def processar_hierarquico(cfg: dict) -> dict:
                 marcar_sincronizado(item["id"], child_sync_prop, child_sync_done)
                 log.info("    ✓ Marcado como sincronizado")
 
+            _record(item, child_db_id, nome_categoria, titulo, nome_categoria,
+                    "success", cards_generated=len(cards), cards_inserted=enviados)
             time.sleep(1)
 
     return total
@@ -603,6 +649,10 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
     if not use_sync_field and last_sync_time:
         itens = [i for i in itens if is_newer_than(i, last_sync_time)]
 
+    itens, skipped = _filter_locally_pending(itens)
+    if skipped:
+        log.info(f"  → {skipped} item(s) pulado(s) (já sincronizados localmente)")
+
     if not itens:
         log.info(f"  → Nenhum item pendente em '{db_name}'.")
         return
@@ -628,6 +678,8 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
 
         if not conteudo.strip():
             log.info("    → Sem conteúdo. Pulando.")
+            _record(item, db_id, db_name, titulo, db_name,
+                    "skipped", error_msg="sem conteúdo")
             continue
 
         total["itens"] += 1
@@ -638,6 +690,9 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
             if use_sync_field and sync_prop:
                 marcar_sincronizado(item["id"], sync_prop, "❌ Erro")
             total["erros"] += 1
+            _record(item, db_id, db_name, titulo, db_name,
+                    "error", cards_generated=0, cards_inserted=0,
+                    error_msg="IA não retornou flashcards válidos")
             continue
 
         enviados = sum(adicionar_nota(deck_name, c, db_name, titulo, data) for c in cards)
@@ -647,6 +702,8 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
         if use_sync_field and sync_prop:
             marcar_sincronizado(item["id"], sync_prop, sync_done)
 
+        _record(item, db_id, db_name, titulo, db_name,
+                "success", cards_generated=len(cards), cards_inserted=enviados)
         time.sleep(1)
 
 
@@ -677,6 +734,7 @@ def processar_plano(cfg: dict) -> dict:
 # ──────────────────────────────────────────────
 
 def main():
+    global _CURRENT_RUN_ID
     from datetime import date
     log.info("🚀 Iniciando sincronização Notion → Anki")
     log.info(f"Data: {date.today()}")
@@ -713,11 +771,46 @@ def main():
     log.info("✓ Conexões verificadas")
     criar_modelo_basico()
 
+    # Telemetria local — banco SQLite.
+    try:
+        sync_db.init_db()
+        _CURRENT_RUN_ID = sync_db.start_run(
+            mode=cfg.get("mode"),
+            provider=AI_PROVIDER,
+            model=GEMINI_MODEL if AI_PROVIDER == "gemini" else "claude-opus-4-5",
+        )
+    except Exception as exc:
+        log.warning(f"DB local indisponível ({exc}); continuando sem telemetria.")
+        _CURRENT_RUN_ID = None
+
     modo = cfg.get("mode", "hierarchical")
-    if modo == "hierarchical":
-        total = processar_hierarquico(cfg)
-    else:
-        total = processar_plano(cfg)
+    run_status = "success"
+    try:
+        if modo == "hierarchical":
+            total = processar_hierarquico(cfg)
+        else:
+            total = processar_plano(cfg)
+    except Exception:
+        run_status = "error"
+        raise
+    finally:
+        if _CURRENT_RUN_ID is not None:
+            try:
+                stats = locals().get("total") or {"itens": 0, "gerados": 0,
+                                                  "enviados": 0, "erros": 0}
+                sync_db.finish_run(
+                    _CURRENT_RUN_ID,
+                    status=run_status if stats.get("erros", 0) == 0 else (
+                        run_status if run_status == "error" else "success"
+                    ),
+                    items_processed=stats.get("itens", 0),
+                    cards_generated=stats.get("gerados", 0),
+                    cards_inserted=stats.get("enviados", 0),
+                    errors=stats.get("erros", 0),
+                )
+            except Exception as exc:
+                log.warning(f"Falha ao finalizar run no DB local: {exc}")
+            _CURRENT_RUN_ID = None
 
     # Salva timestamp de sync
     cfg["last_sync_time"] = datetime.now(timezone.utc).isoformat()

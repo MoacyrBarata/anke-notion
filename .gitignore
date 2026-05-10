@@ -30,6 +30,12 @@ ENV/
 *.log
 logs/
 
+# Local SQLite history
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # IDE
 .vscode/
 .idea/

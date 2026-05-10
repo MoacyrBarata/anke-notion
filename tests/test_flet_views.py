@@ -109,9 +109,9 @@ def test_rail_type(page):
     assert isinstance(_get_rail(page), ft.NavigationRail)
 
 
-def test_rail_has_four_destinations(page):
+def test_rail_has_five_destinations(page):
     rail = _get_rail(page)
-    assert len(rail.destinations) == 4
+    assert len(rail.destinations) == 5
 
 
 def test_rail_selected_index_zero(page):
@@ -124,6 +124,7 @@ def test_rail_destination_labels(page):
     labels = [d.label for d in rail.destinations]
     assert "Sync" in labels
     assert "Notion" in labels
+    assert "Histórico" in labels
     assert "Config" in labels
     assert "Ajuda" in labels
 
@@ -334,7 +335,7 @@ def test_snack_sets_snack_bar(page):
     rail = row.controls[0].content
 
     e = MagicMock()
-    e.control.selected_index = 2  # Settings
+    e.control.selected_index = 3  # Settings (after the new Histórico tab at idx 2)
     rail.on_change(e)
 
     settings_view = content.content

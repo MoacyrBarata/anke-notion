@@ -31,6 +31,9 @@ from ui_components import (
     field, dropdown, hint, field_with_hint,
 )
 
+import db as sync_db
+import updater
+
 ROOT            = Path(__file__).parent
 ENV_FILE        = ROOT / ".env"
 NOTION_CFG_FILE = ROOT / "notion_config.json"
@@ -444,18 +447,54 @@ def main(page: ft.Page):
     f_host    = field("Anki Host",         cfg.get("ANKI_HOST", "http://localhost:8765"))
     f_cards   = field("Máx. flashcards",   cfg.get("MAX_FLASHCARDS_POR_AULA", "10"), width=140)
 
+    GEMINI_MODELS = [
+        ("gemini-2.5-flash",          "gemini-2.5-flash · 🆓 Grátis (recomendado)"),
+        ("gemini-2.5-flash-lite",     "gemini-2.5-flash-lite · 🆓 Grátis (mais rápido)"),
+        ("gemini-flash-latest",       "gemini-flash-latest · 🆓 Grátis (alias 2.5)"),
+        ("gemini-flash-lite-latest",  "gemini-flash-lite-latest · 🆓 Grátis (alias 2.5-lite)"),
+        ("gemini-2.5-pro",            "gemini-2.5-pro · 💳 Pago (qualidade alta)"),
+        ("gemini-pro-latest",         "gemini-pro-latest · 💳 Pago (alias 2.5-pro)"),
+        ("gemini-2.0-flash",          "gemini-2.0-flash · ⚠️ Sem free tier em projetos novos"),
+        ("gemini-2.0-flash-lite",     "gemini-2.0-flash-lite · ⚠️ Sem free tier em projetos novos"),
+    ]
     gem_model_dd = dropdown(
         "Modelo Gemini",
-        ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
-         "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest",
-         "gemini-2.0-flash", "gemini-2.0-flash-lite"],
-        value=cfg.get("GEMINI_MODEL", "gemini-2.0-flash"),
+        GEMINI_MODELS,
+        value=cfg.get("GEMINI_MODEL", "gemini-2.5-flash"),
     )
+    gem_model_hint = ft.Row([
+        ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
+        ft.Text("🆓 = free tier ativo · 💳 = requer billing · ⚠️ = quota=0 em contas novas",
+                color=C_DIM, size=11, expand=True),
+    ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     _init_provider = cfg.get("AI_PROVIDER", "claude")
-    ant_key_wrap = ft.Container(content=f_ant_key, visible=(_init_provider == "claude"))
+    ant_key_wrap = ft.Container(
+        content=ft.Column([
+            f_ant_key,
+            ft.Container(height=4),
+            ft.Row([
+                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
+                ft.Text("Claude é pago (Anthropic) · Sem free tier",
+                        color=C_DIM, size=11, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], spacing=2, tight=True),
+        visible=(_init_provider == "claude"),
+    )
     gem_key_wrap = ft.Container(
-        content=ft.Column([f_gem_key, ft.Container(height=8), gem_model_dd], spacing=8),
+        content=ft.Column([
+            f_gem_key,
+            ft.Container(height=4),
+            ft.Row([
+                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
+                ft.Text("Gemini tem free tier nos modelos 2.5 (≈15 req/min, 1500/dia)",
+                        color=C_DIM, size=11, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=8),
+            gem_model_dd,
+            ft.Container(height=4),
+            gem_model_hint,
+        ], spacing=2, tight=True),
         visible=(_init_provider == "gemini"),
     )
 
@@ -465,15 +504,27 @@ def main(page: ft.Page):
         gem_key_wrap.visible = is_gemini
         page.update()
 
+    def _prov_card(value, label, tag, tag_color):
+        return ft.Container(
+            content=ft.Row([
+                ft.Radio(value=value, fill_color=C_ACCENT),
+                ft.Column([
+                    ft.Text(label, color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
+                    ft.Text(tag, color=tag_color, size=11),
+                ], spacing=2, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            bgcolor=C_GLASS, border=_ball(1, C_BORDER),
+            border_radius=10, padding=ft.padding.Padding(left=10, right=12, top=8, bottom=8),
+            expand=True,
+        )
+
     prov_radio = ft.RadioGroup(
         value=_init_provider,
         on_change=_on_provider_change,
         content=ft.Row([
-            ft.Radio(value="claude", label="Claude", fill_color=C_ACCENT,
-                     label_style=ft.TextStyle(color=C_DIM, size=13)),
-            ft.Radio(value="gemini", label="Gemini", fill_color=C_ACCENT,
-                     label_style=ft.TextStyle(color=C_DIM, size=13)),
-        ], spacing=24),
+            _prov_card("claude", "Claude", "💳 Pago — Anthropic",            C_WARNING),
+            _prov_card("gemini", "Gemini", "🆓 Free tier — Google AI Studio", C_SUCCESS),
+        ], spacing=10),
     )
 
     # ── Snackbar ───────────────────────────────────────────────────────────────
@@ -833,6 +884,30 @@ def main(page: ft.Page):
 
     setup_col = ft.Column(controls=[], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
+    def _reset_wizard(e=None):
+        """Apaga notion_config.json e zera todo o estado do wizard."""
+        try:
+            if NOTION_CFG_FILE.exists():
+                NOTION_CFG_FILE.unlink()
+        except Exception as exc:
+            snack(f"Falha ao remover config: {exc}", C_ERROR)
+            return
+        state.update({
+            "setup_step":            1,
+            "setup_mode":            "hierarchical",
+            "setup_parent_db_id":    None,
+            "setup_parent_db_name":  None,
+            "setup_selected_dbs":    [],
+            "setup_child_props":     None,
+            "notion_dbs":            None,
+            "notion_dbs_err":        None,
+            "notion_loading":        False,
+            "notion_db_checked":     None,
+            "notion_db_expanded":    None,
+        })
+        snack("🔄 Configuração apagada. Comece pelo Passo 1.", C_ACCENT)
+        rebuild()
+
     def dot(n):
         done   = n < state["setup_step"]
         active = n == state["setup_step"]
@@ -943,13 +1018,7 @@ def main(page: ft.Page):
                     ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=C_SUCCESS, size=16),
                     ft.Text("Configuração salva", color=C_SUCCESS, size=13, weight=ft.FontWeight.W_600),
                     ft.Container(expand=True),
-                    ghost_btn("Reconfigurar", lambda e: (
-                        state.update({
-                            "setup_step": 1, "notion_dbs": None, "notion_dbs_err": None,
-                            "notion_loading": False, "setup_selected_dbs": [],
-                            "notion_db_checked": None, "notion_db_expanded": None,
-                        }) or rebuild()
-                    )),
+                    ghost_btn("Reconfigurar", _reset_wizard),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
                 ft.Row([
@@ -1408,12 +1477,144 @@ def main(page: ft.Page):
                     page.update()
             threading.Thread(target=_restore, daemon=True).start()
 
+    # ── Update banner (populated by background check) ──────────────────────────
+    upd_state = {"checking": False, "info": None, "applying": False}
+    upd_card  = ft.Container(visible=False)
+    upd_btn_ref = ft.Ref[ft.OutlinedButton]()
+    upd_msg     = ft.Text("", color=C_DIM, size=12, selectable=True)
+    upd_status  = ft.Text("", color=C_DIM, size=11, italic=True)
+
+    def _set_upd_banner(info: dict | None):
+        upd_state["info"] = info
+        if not info:
+            upd_card.visible = False
+            page.update()
+            return
+        if info.get("error"):
+            upd_card.visible = False
+            page.update()
+            return
+        if not info.get("has_update"):
+            upd_card.visible = True
+            upd_card.bgcolor = f"{C_SUCCESS},0.08"
+            upd_card.border  = _ball(1, f"{C_SUCCESS},0.25")
+            upd_msg.value    = f"✓ Você está na versão mais recente ({info['current']})."
+            if upd_btn_ref.current:
+                upd_btn_ref.current.visible = False
+            page.update()
+            return
+        upd_card.visible = True
+        upd_card.bgcolor = f"{C_ACCENT},0.10"
+        upd_card.border  = _ball(1, f"{C_ACCENT},0.35")
+        notes = (info.get("remote") or {}).get("notes", "") or ""
+        if len(notes) > 140:
+            notes = notes[:140].rstrip() + "…"
+        upd_msg.value = (f"🚀 Nova versão disponível: {info['latest']} "
+                         f"(você tem {info['current']}).\n{notes}").strip()
+        if upd_btn_ref.current:
+            upd_btn_ref.current.visible = True
+        page.update()
+
+    def _check_updates_async(e=None):
+        if upd_state["checking"]:
+            return
+        upd_state["checking"] = True
+        upd_status.value = "Verificando atualizações..."
+        upd_card.visible = True
+        upd_card.bgcolor = C_GLASS
+        upd_card.border  = _ball(1, C_BORDER)
+        upd_msg.value    = ""
+        if upd_btn_ref.current:
+            upd_btn_ref.current.visible = False
+        page.update()
+
+        def work():
+            try:
+                info = updater.check_for_update()
+            except Exception as exc:
+                info = {"current": updater.get_current_version(), "latest": None,
+                        "has_update": False, "error": str(exc)}
+            upd_state["checking"] = False
+            upd_status.value = ""
+            _set_upd_banner(info)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_update(e=None):
+        if upd_state["applying"]:
+            return
+        upd_state["applying"] = True
+        upd_status.value = "Baixando e aplicando atualização..."
+        if upd_btn_ref.current:
+            upd_btn_ref.current.disabled = True
+        page.update()
+
+        def work():
+            try:
+                ok, msg = updater.apply_update("auto")
+            except Exception as exc:
+                ok, msg = False, f"Erro inesperado: {exc}"
+            upd_state["applying"] = False
+            if ok:
+                upd_status.value = ""
+                upd_card.bgcolor = f"{C_SUCCESS},0.10"
+                upd_card.border  = _ball(1, f"{C_SUCCESS},0.35")
+                upd_msg.value    = (f"✅ Atualização aplicada ({msg}).\n"
+                                    f"Feche e abra o app para usar a nova versão.")
+                if upd_btn_ref.current:
+                    upd_btn_ref.current.visible = False
+                snack("✅ Atualização aplicada — reinicie o app.", C_SUCCESS)
+            else:
+                upd_status.value = ""
+                upd_card.bgcolor = f"{C_ERROR},0.10"
+                upd_card.border  = _ball(1, f"{C_ERROR},0.35")
+                upd_msg.value    = f"⚠ Falha: {msg}"
+                if upd_btn_ref.current:
+                    upd_btn_ref.current.disabled = False
+                snack(f"Falha ao atualizar: {msg}", C_ERROR)
+            page.update()
+        threading.Thread(target=work, daemon=True).start()
+
+    upd_card = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.SYSTEM_UPDATE_ROUNDED, color=C_ACCENT, size=18),
+                ft.Text("Atualizações", color=C_TEXT, size=13,
+                        weight=ft.FontWeight.W_600),
+                ft.Container(expand=True),
+                ft.OutlinedButton(
+                    "Atualizar agora",
+                    icon=ft.Icons.DOWNLOAD_ROUNDED,
+                    on_click=_apply_update,
+                    ref=upd_btn_ref,
+                    visible=False,
+                    style=ft.ButtonStyle(
+                        color=C_ACCENT,
+                        side=ft.BorderSide(1, f"{C_ACCENT},0.5"),
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                    ),
+                ),
+                ghost_btn("↻ Verificar", _check_updates_async),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=4),
+            upd_msg,
+            upd_status,
+        ], spacing=4),
+        bgcolor=C_GLASS, border=_ball(1, C_BORDER),
+        border_radius=14, padding=14, visible=False,
+    )
+
     view_settings = ft.Column([
         glass(ft.Column([
             ft.Row([ft.Icon(ft.Icons.SETTINGS_ROUNDED, color=C_ACCENT, size=22),
-                    h("Configurações")], spacing=10),
+                    h("Configurações"),
+                    ft.Container(expand=True),
+                    ft.Text(f"v{updater.get_current_version()}",
+                            color=C_DIM, size=11)],
+                   spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             dim("Chaves de API e preferências de sincronização."),
         ], spacing=6)),
+        ft.Container(height=12),
+        upd_card,
         ft.Container(height=12),
         glass(ft.Column([
             dim("NOTION", size=10, color=C_MUTED),
@@ -1508,10 +1709,144 @@ def main(page: ft.Page):
     ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # VIEW 4 — HISTÓRICO (SQLite)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    history_status_filter = {"value": None}  # None | 'success' | 'error' | 'skipped'
+    history_list_col      = ft.Column(controls=[], spacing=8)
+    history_stats_row     = ft.Row(controls=[], spacing=10)
+
+    def _stat_card(label, value, color=C_TEXT):
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(str(value), color=color, size=22, weight=ft.FontWeight.W_700),
+                ft.Text(label, color=C_DIM, size=11),
+            ], spacing=2),
+            bgcolor=C_GLASS, border=_ball(1, C_BORDER),
+            border_radius=12, padding=14, expand=True,
+        )
+
+    def _history_row(item):
+        st     = item.get("status", "")
+        if st == "success":
+            color, ic = C_SUCCESS, ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED
+        elif st == "error":
+            color, ic = C_ERROR, ft.Icons.ERROR_OUTLINE_ROUNDED
+        else:
+            color, ic = C_WARNING, ft.Icons.REMOVE_CIRCLE_OUTLINE_ROUNDED
+
+        when = (item.get("synced_at") or "")[:19].replace("T", " ")
+        title = item.get("title") or item.get("page_id", "")[:8]
+        cards = f"{item.get('cards_inserted', 0)}/{item.get('cards_generated', 0)} cards"
+        meta_bits = [when, item.get("category") or item.get("db_name") or "", cards]
+        if item.get("retry_count"):
+            meta_bits.append(f"retry #{item['retry_count']}")
+        meta = " · ".join(b for b in meta_bits if b)
+
+        def _resync(e, pid=item["page_id"]):
+            n = sync_db.mark_pending(pid)
+            snack(f"🔄 {n} registro(s) removido(s). Item será re-sincronizado.", C_ACCENT)
+            _refresh_history()
+
+        body = [
+            ft.Row([
+                ft.Icon(ic, color=color, size=16),
+                ft.Text(title, color=C_TEXT, size=13, weight=ft.FontWeight.W_500,
+                        expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ghost_btn("↻ Re-sync", _resync),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Text(meta, color=C_DIM, size=11),
+        ]
+        if item.get("error_msg"):
+            body.append(ft.Text(item["error_msg"], color=C_ERROR, size=11, italic=True,
+                                max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+
+        return ft.Container(
+            content=ft.Column(body, spacing=4),
+            bgcolor=C_GLASS, border=_ball(1, C_BORDER),
+            border_radius=12, padding=12,
+        )
+
+    def _refresh_history(e=None):
+        try:
+            sync_db.init_db()
+            stats = sync_db.get_stats(days=30)
+            rows  = sync_db.list_history(limit=80,
+                                         status=history_status_filter["value"])
+        except Exception as exc:
+            history_stats_row.controls = [
+                ft.Text(f"⚠ Falha ao ler banco local: {exc}", color=C_ERROR, size=12),
+            ]
+            history_list_col.controls = []
+            page.update()
+            return
+
+        history_stats_row.controls = [
+            _stat_card("Runs (30d)",     stats["runs"]),
+            _stat_card("Itens (30d)",    stats["attempts"]),
+            _stat_card("Sucessos (30d)", stats["successes"], C_SUCCESS),
+            _stat_card("Erros (30d)",    stats["errors"], C_ERROR if stats["errors"] else C_TEXT),
+            _stat_card("Cards no Anki",  stats["cards"], C_ACCENT),
+        ]
+        if not rows:
+            history_list_col.controls = [
+                ft.Container(
+                    content=ft.Text("Sem histórico ainda. Rode uma sincronização.",
+                                    color=C_DIM, size=12, italic=True),
+                    padding=20, alignment=ft.Alignment(0, 0),
+                ),
+            ]
+        else:
+            history_list_col.controls = [_history_row(r) for r in rows]
+        page.update()
+
+    def _set_filter(value):
+        def handler(e):
+            history_status_filter["value"] = value
+            _refresh_history()
+        return handler
+
+    def _wipe_history(e=None):
+        n = sync_db.mark_all_pending()
+        snack(f"🗑 Histórico apagado ({n} registros). Próxima sync re-processa tudo.",
+              C_WARNING)
+        _refresh_history()
+
+    view_history = ft.Column([
+        glass(ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.HISTORY_ROUNDED, color=C_ACCENT, size=22),
+                h("Histórico de sincronizações"),
+                ft.Container(expand=True),
+                ghost_btn("↻ Atualizar", _refresh_history),
+            ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
+            dim("Banco SQLite local — independente do Notion. "
+                "Funciona em Windows, Linux e macOS."),
+        ], spacing=6)),
+        ft.Container(height=12),
+        history_stats_row,
+        ft.Container(height=12),
+        ft.Row([
+            ghost_btn("Todos",     _set_filter(None)),
+            ghost_btn("✓ Sucesso", _set_filter("success")),
+            ghost_btn("✗ Erro",    _set_filter("error")),
+            ghost_btn("⤼ Pulado",  _set_filter("skipped")),
+            ft.Container(expand=True),
+            ghost_btn("🗑 Apagar histórico", _wipe_history),
+        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Container(height=12),
+        history_list_col,
+        ft.Container(height=20),
+    ], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+
+    # Pre-populate before first render so the view is never blank.
+    _refresh_history()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # LAYOUT — Rail + Content
     # ══════════════════════════════════════════════════════════════════════════
 
-    views = [view_sync, setup_col, view_settings, view_help]
+    views = [view_sync, setup_col, view_history, view_settings, view_help]
 
     content = ft.Container(
         content=view_sync,
@@ -1524,6 +1859,8 @@ def main(page: ft.Page):
         content.content = views[idx]
         if idx == 1:
             rebuild()
+        elif idx == 2:
+            _refresh_history()
         page.update()
 
     rail = ft.NavigationRail(
@@ -1557,6 +1894,11 @@ def main(page: ft.Page):
                 icon=ft.Icons.ACCOUNT_TREE_OUTLINED,
                 selected_icon=ft.Icons.ACCOUNT_TREE_ROUNDED,
                 label="Notion",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.HISTORY_ROUNDED,
+                selected_icon=ft.Icons.HISTORY_ROUNDED,
+                label="Histórico",
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icons.TUNE_OUTLINED,
@@ -1608,6 +1950,22 @@ def main(page: ft.Page):
 
     page.add(ft.Row([sidebar, content], expand=True, spacing=0))
     page.update()
+
+    # Background update check (best-effort, non-blocking).
+    def _bg_update_check():
+        try:
+            info = updater.check_for_update()
+        except Exception:
+            return
+        if info.get("has_update"):
+            _set_upd_banner(info)
+            try:
+                snack(f"🚀 Atualização disponível: {info['latest']} "
+                      f"(você tem {info['current']}). Veja em Configurações.",
+                      C_ACCENT)
+            except Exception:
+                pass
+    threading.Thread(target=_bg_update_check, daemon=True).start()
 
 
 if __name__ == "__main__":

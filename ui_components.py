@@ -121,8 +121,18 @@ def field(label, value="", password=False, hint="", width=None):
 
 
 def dropdown(label, options, value=None):
-    opts = [ft.dropdown.Option(o) for o in options]
-    val  = value if value in options else (options[0] if options else None)
+    """`options` aceita strings ou tuplas (key, text). Quando tupla, key vira
+    o valor armazenado e text vira o que aparece na lista."""
+    keys = []
+    opts = []
+    for o in options:
+        if isinstance(o, tuple):
+            k, t = o[0], o[1]
+        else:
+            k, t = o, o
+        keys.append(k)
+        opts.append(ft.dropdown.Option(key=k, text=t))
+    val = value if value in keys else (keys[0] if keys else None)
     return ft.Dropdown(
         label=label, options=opts, value=val,
         bgcolor="#0e1a32",
