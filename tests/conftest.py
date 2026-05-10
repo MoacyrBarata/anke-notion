@@ -42,6 +42,14 @@ def mock_streamlit(monkeypatch):
     st_mock.session_state = _FakeSessionState()
     st_mock.slider.return_value = 10
     st_mock.number_input.return_value = 0
+    # Buttons/checkboxes default to False/empty so import-time `if st.button(...)`
+    # branches don't fire and pollute .env via save_cfg(MagicMock(...)).
+    st_mock.button.return_value = False
+    st_mock.checkbox.return_value = False
+    st_mock.text_input.return_value = ""
+    st_mock.text_area.return_value = ""
+    st_mock.selectbox.return_value = ""
+    st_mock.radio.return_value = ""
     st_mock.tabs.side_effect = lambda items: [MagicMock() for _ in items]
     st_mock.columns.side_effect = lambda n, **kw: [
         MagicMock() for _ in (range(n) if isinstance(n, int) else n)

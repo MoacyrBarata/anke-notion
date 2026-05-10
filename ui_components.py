@@ -4,19 +4,19 @@ All functions are pure (no state, no page references) and safe to import anywher
 """
 import flet as ft
 
-# ── Palette ────────────────────────────────────────────────────────────────────
-C_BG        = "#090915"
+# ── Palette (blue-shifted) ─────────────────────────────────────────────────────
+C_BG        = "#070d1a"
 C_GLASS     = "#ffffff,0.051"
 C_GLASS_HVR = "#ffffff,0.094"
 C_BORDER    = "#ffffff,0.094"
-C_ACCENT    = "#c254cb"
-C_ACCENT2   = "#d982df"
+C_ACCENT    = "#3b82f6"
+C_ACCENT2   = "#38bdf8"
 C_SUCCESS   = "#34d399"
 C_WARNING   = "#e98a34"
 C_ERROR     = "#f56691"
-C_TEXT      = "#eeeeff"
-C_DIM       = "#9a90b8"
-C_MUTED     = "#524868"
+C_TEXT      = "#eaf0ff"
+C_DIM       = "#8aa0c8"
+C_MUTED     = "#465879"
 
 
 # ── Border helpers ─────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ def dropdown(label, options, value=None):
     val  = value if value in options else (options[0] if options else None)
     return ft.Dropdown(
         label=label, options=opts, value=val,
-        bgcolor="#1a1a38",
+        bgcolor="#0e1a32",
         border_color=C_BORDER,
         focused_border_color=C_ACCENT,
         border_radius=12,

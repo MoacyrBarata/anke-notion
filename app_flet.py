@@ -34,7 +34,7 @@ from ui_components import (
 ROOT            = Path(__file__).parent
 ENV_FILE        = ROOT / ".env"
 NOTION_CFG_FILE = ROOT / "notion_config.json"
-_NOTION_VERSION = "2022-06-28"
+_NOTION_VERSION = "2025-09-03"
 
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
@@ -169,15 +169,26 @@ def list_notion_databases(token: str, on_progress=None):
                     pass
                 parent = page.get("parent", {})
                 db_id  = parent.get("database_id") or parent.get("data_source_id")
-                if parent.get("type") in ("database_id", "data_source_id") and db_id:
+                ptype  = parent.get("type")
+                if ptype in ("database_id", "data_source_id") and db_id:
                     if db_id not in db_map:
                         if p_title:
                             prog(f"🔎 Encontrado em \"{p_title}\", buscando tabela...")
                         try:
-                            db = _notion_get(token, f"/databases/{db_id}")
-                            db_title = (db.get("title") or [{}])[0].get("plain_text", db_id[:8])
-                            prog(f"✅ Tabela descoberta: {db_title}")
-                            db_map[db_id] = db
+                            if ptype == "data_source_id":
+                                db = _notion_get(token, f"/data_sources/{db_id}")
+                                db_title = (db.get("title") or [{}])[0].get("plain_text", db_id[:8])
+                                prog(f"✅ Tabela descoberta: {db_title}")
+                                db_map[db_id] = db
+                            else:
+                                db = _notion_get(token, f"/databases/{db_id}")
+                                for src in (db.get("data_sources") or []):
+                                    if src["id"] in db_map:
+                                        continue
+                                    src_full = _notion_get(token, f"/data_sources/{src['id']}")
+                                    src_title = (src_full.get("title") or [{}])[0].get("plain_text") or src.get("name") or src["id"][:8]
+                                    prog(f"✅ Tabela descoberta: {src_title}")
+                                    db_map[src["id"]] = src_full
                         except Exception:
                             pass
             if not resp.get("has_more"):
@@ -196,11 +207,19 @@ def list_notion_databases(token: str, on_progress=None):
 
 
 def get_database_properties(token: str, db_id: str) -> dict:
+    """db_id é data_source_id (Notion API 2025-09-03)."""
     if not token or not db_id:
         return {}
     try:
-        return _notion_get(token, f"/databases/{db_id}").get("properties", {})
+        return _notion_get(token, f"/data_sources/{db_id}").get("properties", {})
     except Exception:
+        try:
+            db = _notion_get(token, f"/databases/{db_id}")
+            sources = db.get("data_sources") or []
+            if sources:
+                return _notion_get(token, f"/data_sources/{sources[0]['id']}").get("properties", {})
+        except Exception:
+            pass
         return {}
 
 
@@ -269,11 +288,12 @@ def suggest_fields(props: dict) -> dict:
 
 
 def get_sample_page(token: str, db_id: str) -> dict | None:
+    """db_id é data_source_id."""
     if not token or not db_id:
         return None
     try:
         r = requests.post(
-            f"https://api.notion.com/v1/databases/{db_id}/query",
+            f"https://api.notion.com/v1/data_sources/{db_id}/query",
             headers={"Authorization": f"Bearer {token}",
                      "Notion-Version": _NOTION_VERSION},
             json={"page_size": 1},
@@ -361,18 +381,18 @@ def main(page: ft.Page):
         on_secondary=C_TEXT,
         on_secondary_container=C_TEXT,
         tertiary=C_ACCENT,
-        tertiary_container="#0f0f20",
+        tertiary_container="#0a1226",
         on_tertiary=C_TEXT,
         on_tertiary_container=C_TEXT,
         surface=C_BG,
         surface_tint=C_BG,
         surface_dim=C_BG,
-        surface_bright="#0f0f1f",
+        surface_bright="#0d1729",
         surface_container_lowest=C_BG,
-        surface_container_low="#0a0a18",
-        surface_container="#0d0d1e",
-        surface_container_high="#111125",
-        surface_container_highest="#181830",
+        surface_container_low="#08111f",
+        surface_container="#0a1426",
+        surface_container_high="#0e1a30",
+        surface_container_highest="#142441",
         on_surface=C_TEXT,
         on_surface_variant=C_DIM,
         outline="#ffffff,0.133",
@@ -392,8 +412,8 @@ def main(page: ft.Page):
     page.padding    = 0
     page.window.width      = 1120
     page.window.height     = 860
-    page.window.min_width  = 820
-    page.window.min_height = 680
+    page.window.min_width  = 480
+    page.window.min_height = 600
 
     # ── App state ──────────────────────────────────────────────────────────────
     cfg = load_cfg()
@@ -426,7 +446,9 @@ def main(page: ft.Page):
 
     gem_model_dd = dropdown(
         "Modelo Gemini",
-        ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+        ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
+         "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest",
+         "gemini-2.0-flash", "gemini-2.0-flash-lite"],
         value=cfg.get("GEMINI_MODEL", "gemini-2.0-flash"),
     )
 
@@ -516,11 +538,11 @@ def main(page: ft.Page):
 
     # ── Flashcard workshop animation ───────────────────────────────────────────
     _fc_shadow2 = ft.Container(
-        bgcolor="#0b0b22", border=_ball(1, f"{C_ACCENT},0.07"),
+        bgcolor="#081127", border=_ball(1, f"{C_ACCENT},0.07"),
         border_radius=12, width=224, height=72, top=16, left=16,
     )
     _fc_shadow1 = ft.Container(
-        bgcolor="#0f0f2a", border=_ball(1, f"{C_ACCENT},0.12"),
+        bgcolor="#0c1a36", border=_ball(1, f"{C_ACCENT},0.12"),
         border_radius=12, width=224, height=72, top=8, left=8,
     )
     _fc_icon  = ft.Icon(ft.Icons.STYLE_OUTLINED, color=C_ACCENT, size=16)
@@ -533,7 +555,7 @@ def main(page: ft.Page):
                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
             _fc_sub,
         ], spacing=5),
-        bgcolor="#18183a", border=_ball(1, f"{C_ACCENT},0.35"),
+        bgcolor="#142447", border=_ball(1, f"{C_ACCENT},0.35"),
         border_radius=12,
         padding=ft.padding.Padding(left=14, right=14, top=14, bottom=14),
         width=224, height=72, top=0, left=0,
@@ -626,10 +648,10 @@ def main(page: ft.Page):
         _fc_sub.value       = ""
         _fc_count.value     = "Preparando..."
         _fc_count.color     = C_DIM
-        _fc_front.bgcolor   = "#18183a"
+        _fc_front.bgcolor   = "#142447"
         _fc_front.border    = _ball(1, f"{C_ACCENT},0.35")
-        _fc_shadow1.bgcolor = "#0f0f2a"
-        _fc_shadow2.bgcolor = "#0b0b22"
+        _fc_shadow1.bgcolor = "#0c1a36"
+        _fc_shadow2.bgcolor = "#081127"
         page.update()
 
         env = {
@@ -1211,7 +1233,7 @@ def main(page: ft.Page):
                             color=C_SUCCESS, size=11),
                 ], spacing=4),
             ], spacing=6),
-            bgcolor="#12122a",
+            bgcolor="#0c1a2e",
             border=_ball(1, C_BORDER),
             border_radius=18,
             padding=14,
@@ -1554,6 +1576,35 @@ def main(page: ft.Page):
         content=rail,
         border=_bonly(right=(1, C_BORDER)),
     )
+
+    NARROW_BP = 720
+    state["layout_mode"] = "wide"
+
+    def _apply_layout(width):
+        try:
+            w = float(width or 0)
+        except (TypeError, ValueError):
+            w = 0.0
+        narrow = 0 < w < NARROW_BP
+        mode   = "narrow" if narrow else "wide"
+        if mode == state.get("layout_mode"):
+            return
+        state["layout_mode"] = mode
+        if narrow:
+            content.padding   = ft.padding.Padding(left=12, right=12, top=14, bottom=10)
+            sidebar.visible   = False
+            rail.label_type   = ft.NavigationRailLabelType.NONE
+        else:
+            content.padding   = ft.padding.Padding(left=28, right=28, top=24, bottom=16)
+            sidebar.visible   = True
+            rail.label_type   = ft.NavigationRailLabelType.ALL
+
+    def _on_resized(e):
+        _apply_layout(getattr(e, "width", None) or page.window.width)
+        page.update()
+
+    page.on_resized = _on_resized
+    _apply_layout(page.window.width or 1120)
 
     page.add(ft.Row([sidebar, content], expand=True, spacing=0))
     page.update()

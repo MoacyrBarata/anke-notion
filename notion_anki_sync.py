@@ -106,14 +106,36 @@ else:
 # ──────────────────────────────────────────────
 
 def query_database_all(db_id: str, filter_obj: dict | None = None) -> list[dict]:
-    """Pagina todas as results de um database."""
+    """Pagina todas as results de uma data_source.
+
+    Compatível com Notion API 2025-09-03 (notion-client v3+):
+    - db_id agora é tratado como data_source_id.
+    - Se um database_id legacy for passado, resolve para o primeiro
+      data_source associado e tenta novamente.
+    """
+    target_id = db_id
     results = []
     cursor  = None
     while True:
         kwargs = {"start_cursor": cursor} if cursor else {}
         if filter_obj:
             kwargs["filter"] = filter_obj
-        resp = notion.databases.query(db_id, **kwargs)
+        try:
+            resp = notion.data_sources.query(data_source_id=target_id, **kwargs)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if results or cursor or "data_source" in msg or "not_found" not in msg:
+                raise
+            # Fallback: db_id pode ser um database_id; resolver data_source.
+            try:
+                db = notion.databases.retrieve(database_id=db_id)
+                ds_list = db.get("data_sources") or []
+                if not ds_list:
+                    raise
+                target_id = ds_list[0]["id"]
+                continue
+            except Exception:
+                raise exc
         results.extend(resp["results"])
         if not resp["has_more"]:
             break
@@ -199,14 +221,32 @@ def get_page_content(page_id: str) -> str:
 
 
 def find_child_database(page_id: str, keyword: str) -> str | None:
-    """Busca child_database cujo título contenha keyword."""
+    """Busca child_database cujo título contenha keyword.
+
+    Retorna o data_source_id (não o database_id) para uso direto em
+    data_sources.query. Em databases multi-source, escolhe a data_source
+    cujo nome contenha a keyword; se nenhuma casar, usa a primeira.
+    """
     try:
         children = notion.blocks.children.list(block_id=page_id)
         for block in children["results"]:
-            if block["type"] == "child_database":
-                title = block["child_database"].get("title", "")
-                if keyword.lower() in title.lower():
-                    return block["id"]
+            if block["type"] != "child_database":
+                continue
+            title = block["child_database"].get("title", "")
+            if keyword.lower() not in title.lower():
+                continue
+            db_block_id = block["id"]
+            try:
+                db = notion.databases.retrieve(database_id=db_block_id)
+                sources = db.get("data_sources") or []
+                if not sources:
+                    return db_block_id  # fallback legacy
+                for src in sources:
+                    if keyword.lower() in (src.get("name") or "").lower():
+                        return src["id"]
+                return sources[0]["id"]
+            except Exception:
+                return db_block_id
     except Exception as e:
         log.warning(f"Erro ao buscar child DB em {page_id}: {e}")
     return None

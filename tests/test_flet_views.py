@@ -44,10 +44,14 @@ class FakePage:
 
 
 @pytest.fixture()
-def page(monkeypatch):
+def page(monkeypatch, tmp_path):
     """FakePage with patched filesystem helpers so no real .env or JSON is read."""
     monkeypatch.setattr(app_flet, "load_cfg", lambda: {})
     monkeypatch.setattr(app_flet, "load_notion_config", lambda: None)
+    # Redirect any writes (save_cfg / save_notion_config) to tmp dir so tests
+    # that exercise the save button cannot pollute the real .env.
+    monkeypatch.setattr(app_flet, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(app_flet, "NOTION_CFG_FILE", tmp_path / "notion_config.json")
     return FakePage()
 
 
@@ -71,9 +75,9 @@ def test_main_sets_dark_theme_mode(page):
 def test_main_sets_window_dimensions(page):
     app_flet.main(page)
     assert page.window.width == 1120
-    assert page.window.height == 760
-    assert page.window.min_width == 820
-    assert page.window.min_height == 580
+    assert page.window.height == 860
+    assert page.window.min_width == 480
+    assert page.window.min_height == 600
 
 
 def test_main_adds_exactly_one_root_control(page):

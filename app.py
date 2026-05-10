@@ -102,7 +102,13 @@ def check_ai_key(provider: str, key: str) -> tuple[bool, str]:
 
 
 def list_notion_databases(token: str) -> list[dict]:
-    """Retorna todos os databases acessíveis pela integração."""
+    """Retorna todas as data_sources (databases na nomenclatura nova) acessíveis.
+
+    Notion API mudou em 2025-09-03: o filtro "database" foi removido em
+    favor de "data_source". Cada database pode conter várias data_sources;
+    aqui retornamos as data_sources diretamente, pois são elas que respondem
+    a queries de itens.
+    """
     if not NOTION_CLIENT_AVAILABLE or not token:
         return []
     try:
@@ -110,7 +116,7 @@ def list_notion_databases(token: str) -> list[dict]:
         results = []
         cursor  = None
         while True:
-            kwargs = {"filter": {"property": "object", "value": "database"}}
+            kwargs = {"filter": {"property": "object", "value": "data_source"}}
             if cursor:
                 kwargs["start_cursor"] = cursor
             resp = client.search(**kwargs)
@@ -125,13 +131,13 @@ def list_notion_databases(token: str) -> list[dict]:
 
 
 def get_database_properties(token: str, db_id: str) -> dict:
-    """Retorna as propriedades de um database."""
+    """Retorna as propriedades de uma data_source (db_id é o data_source_id)."""
     if not NOTION_CLIENT_AVAILABLE or not token:
         return {}
     try:
         client = NotionClient(auth=token)
-        db     = client.databases.retrieve(db_id)
-        return db.get("properties", {})
+        ds     = client.data_sources.retrieve(data_source_id=db_id)
+        return ds.get("properties", {})
     except Exception as e:
         st.error(f"Erro ao buscar propriedades: {e}")
         return {}
@@ -203,7 +209,7 @@ html, body, [class*="css"] {
 
 /* ── Background ── */
 .stApp {
-    background: linear-gradient(135deg, #0d0d1a 0%, #1a0533 35%, #0d1a33 65%, #0d0d1a 100%);
+    background: linear-gradient(135deg, #050c1a 0%, #0a1f3d 35%, #0c2a4d 65%, #050c1a 100%);
     background-attachment: fixed;
 }
 
@@ -216,9 +222,9 @@ html, body, [class*="css"] {
     width: 200%;
     height: 200%;
     background:
-        radial-gradient(ellipse 600px 400px at 20% 30%, rgba(99, 102, 241, 0.12) 0%, transparent 60%),
-        radial-gradient(ellipse 500px 300px at 80% 70%, rgba(139, 92, 246, 0.1) 0%, transparent 60%),
-        radial-gradient(ellipse 400px 400px at 50% 50%, rgba(6, 182, 212, 0.06) 0%, transparent 60%);
+        radial-gradient(ellipse 600px 400px at 20% 30%, rgba(59, 130, 246, 0.16) 0%, transparent 60%),
+        radial-gradient(ellipse 500px 300px at 80% 70%, rgba(56, 189, 248, 0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 400px 400px at 50% 50%, rgba(14, 165, 233, 0.08) 0%, transparent 60%);
     pointer-events: none;
     z-index: 0;
 }
@@ -253,17 +259,69 @@ footer {
 .block-container {
     padding-top: 1.5rem !important;
     padding-bottom: 3rem !important;
+    padding-left: clamp(0.75rem, 3vw, 2rem) !important;
+    padding-right: clamp(0.75rem, 3vw, 2rem) !important;
     position: relative;
     z-index: 1;
     max-width: 1100px;
 }
 
+/* ── Responsive — mobile/tablet adaptations ── */
+@media (max-width: 900px) {
+    .block-container {
+        padding-top: 0.75rem !important;
+        padding-bottom: 1.75rem !important;
+    }
+    .app-title { font-size: 1.55rem !important; }
+    .app-subtitle { font-size: 0.78rem !important; }
+    .glass-card {
+        padding: 1rem 1.1rem !important;
+        border-radius: 14px !important;
+    }
+    [data-testid="stMetricValue"] { font-size: 1.45rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.7rem !important; }
+}
+
+@media (max-width: 600px) {
+    /* Stack metric/columns: Streamlit horizontalBlock → vertical */
+    [data-testid="stHorizontalBlock"] {
+        flex-direction: column !important;
+        gap: 0.5rem !important;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+        width: 100% !important;
+        min-width: 0 !important;
+        flex: 1 1 100% !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 0.78rem !important;
+        padding: 0.4rem 0.6rem !important;
+    }
+    .stButton > button {
+        padding: 0.55rem 0.8rem !important;
+        font-size: 0.85rem !important;
+    }
+    .step-dot { width: 24px !important; height: 24px !important; font-size: 0.7rem !important; }
+}
+
+@media (max-width: 420px) {
+    .app-title { font-size: 1.3rem !important; }
+    .glass-card { padding: 0.85rem 0.95rem !important; }
+    [data-testid="stMetric"] { padding: 0.85rem 1rem !important; }
+}
+
+/* Touch-friendly hit areas */
+@media (hover: none) {
+    .stButton > button:hover { transform: none !important; }
+    .glass-card:hover { transform: none !important; }
+}
+
 /* ── Sidebar ── */
 [data-testid="stSidebar"] {
-    background: rgba(15, 10, 30, 0.7) !important;
+    background: rgba(8, 18, 36, 0.78) !important;
     backdrop-filter: blur(24px) saturate(180%) !important;
     -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
-    border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-right: 1px solid rgba(56, 189, 248, 0.1) !important;
 }
 
 [data-testid="stSidebar"] > div {
@@ -299,8 +357,8 @@ p, li, span, label, .stMarkdown {
 
 .stTextInput > div > div > input:focus,
 .stTextArea > div > div > textarea:focus {
-    border-color: rgba(139, 92, 246, 0.6) !important;
-    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15), 0 0 20px rgba(139, 92, 246, 0.1) !important;
+    border-color: rgba(56, 189, 248, 0.6) !important;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15), 0 0 20px rgba(56, 189, 248, 0.1) !important;
     background: rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -335,14 +393,14 @@ p, li, span, label, .stMarkdown {
 }
 
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.7), rgba(139, 92, 246, 0.7)) !important;
-    border-color: rgba(139, 92, 246, 0.5) !important;
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.7), rgba(56, 189, 248, 0.7)) !important;
+    border-color: rgba(56, 189, 248, 0.5) !important;
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
 }
 
 .stButton > button[kind="primary"]:hover {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.85), rgba(139, 92, 246, 0.85)) !important;
-    box-shadow: 0 8px 32px rgba(99, 102, 241, 0.4), 0 0 60px rgba(139, 92, 246, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.25) !important;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.85), rgba(56, 189, 248, 0.85)) !important;
+    box-shadow: 0 8px 32px rgba(59, 130, 246, 0.4), 0 0 60px rgba(56, 189, 248, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.25) !important;
 }
 
 .stButton > button:disabled {
@@ -403,9 +461,9 @@ p, li, span, label, .stMarkdown {
 }
 
 .stTabs [aria-selected="true"] {
-    background: rgba(139, 92, 246, 0.25) !important;
+    background: rgba(56, 189, 248, 0.25) !important;
     color: rgba(255, 255, 255, 0.95) !important;
-    box-shadow: 0 2px 8px rgba(139, 92, 246, 0.2) !important;
+    box-shadow: 0 2px 8px rgba(56, 189, 248, 0.2) !important;
 }
 
 .stTabs [data-baseweb="tab"]:hover {
@@ -494,15 +552,15 @@ hr {
 
 /* ── Multiselect ── */
 [data-baseweb="tag"] {
-    background: rgba(139, 92, 246, 0.3) !important;
-    border: 1px solid rgba(139, 92, 246, 0.5) !important;
+    background: rgba(56, 189, 248, 0.3) !important;
+    border: 1px solid rgba(56, 189, 248, 0.5) !important;
     border-radius: 8px !important;
     color: rgba(255, 255, 255, 0.9) !important;
 }
 
 /* ── Spinner ── */
 .stSpinner > div {
-    border-top-color: rgba(139, 92, 246, 0.8) !important;
+    border-top-color: rgba(56, 189, 248, 0.8) !important;
 }
 
 /* ── Scrollbar ── */
@@ -534,12 +592,12 @@ hr {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    background: rgba(139, 92, 246, 0.2);
-    border: 1px solid rgba(139, 92, 246, 0.35);
+    background: rgba(56, 189, 248, 0.2);
+    border: 1px solid rgba(56, 189, 248, 0.35);
     border-radius: 20px;
     padding: 0.2rem 0.7rem;
     font-size: 0.75rem;
-    color: rgba(196, 181, 253, 0.9);
+    color: rgba(125, 211, 252, 0.95);
     font-weight: 500;
 }
 
@@ -593,9 +651,9 @@ hr {
 }
 
 .step-dot.active {
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.8), rgba(139, 92, 246, 0.8));
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.8), rgba(56, 189, 248, 0.8));
     color: white;
-    box-shadow: 0 0 12px rgba(139, 92, 246, 0.4);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
 }
 
 .step-dot.done {
@@ -619,7 +677,7 @@ hr {
 .app-title {
     font-size: 2rem;
     font-weight: 700;
-    background: linear-gradient(135deg, #e0e7ff 0%, #c4b5fd 40%, #93c5fd 100%);
+    background: linear-gradient(135deg, #dbeafe 0%, #7dd3fc 40%, #38bdf8 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -691,12 +749,16 @@ with st.sidebar:
     else:
         ai_key = cfg.get("ANTHROPIC_API_KEY", "")
         gemini_key = st.text_input("Gemini API Key", value=cfg.get("GEMINI_API_KEY", ""), type="password", placeholder="AIza...")
+        _GEMINI_MODELS = [
+            "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro",
+            "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest",
+            "gemini-2.0-flash", "gemini-2.0-flash-lite",
+        ]
+        _cur = cfg.get("GEMINI_MODEL", "gemini-2.5-flash")
         gemini_model = st.selectbox(
             "Modelo Gemini",
-            ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
-            index=["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"].index(
-                cfg.get("GEMINI_MODEL", "gemini-2.0-flash")
-            ) if cfg.get("GEMINI_MODEL") in ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"] else 0,
+            _GEMINI_MODELS,
+            index=_GEMINI_MODELS.index(_cur) if _cur in _GEMINI_MODELS else 0,
         )
 
     st.divider()

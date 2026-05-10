@@ -10,7 +10,7 @@ except ImportError:
     NotionClient = None
     NOTION_CLIENT_AVAILABLE = False
 
-_NOTION_VERSION = "2022-06-28"
+_NOTION_VERSION = "2025-09-03"
 
 
 def _notion_get(token: str, path: str) -> dict:
@@ -79,15 +79,27 @@ def list_notion_databases(token: str, on_progress=None):
                     pass
                 parent = page.get("parent", {})
                 db_id  = parent.get("database_id") or parent.get("data_source_id")
-                if parent.get("type") in ("database_id", "data_source_id") and db_id:
+                ptype  = parent.get("type")
+                if ptype in ("database_id", "data_source_id") and db_id:
                     if db_id not in db_map:
                         if p_title:
                             prog(f"🔎 Encontrado em \"{p_title}\", buscando tabela...")
                         try:
-                            db = _notion_get(token, f"/databases/{db_id}")
-                            db_title = (db.get("title") or [{}])[0].get("plain_text", db_id[:8])
-                            prog(f"✅ Tabela descoberta: {db_title}")
-                            db_map[db_id] = db
+                            if ptype == "data_source_id":
+                                db = _notion_get(token, f"/data_sources/{db_id}")
+                                db_title = (db.get("title") or [{}])[0].get("plain_text", db_id[:8])
+                                prog(f"✅ Tabela descoberta: {db_title}")
+                                db_map[db_id] = db
+                            else:
+                                # parent é database_id legacy → resolver data_sources
+                                db = _notion_get(token, f"/databases/{db_id}")
+                                for src in (db.get("data_sources") or []):
+                                    if src["id"] in db_map:
+                                        continue
+                                    src_full = _notion_get(token, f"/data_sources/{src['id']}")
+                                    src_title = (src_full.get("title") or [{}])[0].get("plain_text") or src.get("name") or src["id"][:8]
+                                    prog(f"✅ Tabela descoberta: {src_title}")
+                                    db_map[src["id"]] = src_full
                         except Exception:
                             pass
             if not resp.get("has_more"):
@@ -106,11 +118,20 @@ def list_notion_databases(token: str, on_progress=None):
 
 
 def get_database_properties(token: str, db_id: str) -> dict:
+    """db_id agora é tratado como data_source_id (Notion API 2025-09-03)."""
     if not token or not db_id:
         return {}
     try:
-        return _notion_get(token, f"/databases/{db_id}").get("properties", {})
+        return _notion_get(token, f"/data_sources/{db_id}").get("properties", {})
     except Exception:
+        # Fallback: pode ser um database_id legacy.
+        try:
+            db = _notion_get(token, f"/databases/{db_id}")
+            sources = db.get("data_sources") or []
+            if sources:
+                return _notion_get(token, f"/data_sources/{sources[0]['id']}").get("properties", {})
+        except Exception:
+            pass
         return {}
 
 
@@ -180,11 +201,12 @@ def suggest_fields(props: dict) -> dict:
 
 
 def get_sample_page(token: str, db_id: str) -> dict | None:
+    """db_id é tratado como data_source_id."""
     if not token or not db_id:
         return None
     try:
         r = requests.post(
-            f"https://api.notion.com/v1/databases/{db_id}/query",
+            f"https://api.notion.com/v1/data_sources/{db_id}/query",
             headers={"Authorization": f"Bearer {token}",
                      "Notion-Version": _NOTION_VERSION},
             json={"page_size": 1},
