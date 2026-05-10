@@ -281,21 +281,93 @@ def is_newer_than(page: dict, iso_timestamp: str | None) -> bool:
 # Helpers — IA
 # ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """Você é um especialista em criação de flashcards para estudos.
-Seu objetivo é transformar anotações em flashcards eficientes para revisão no Anki.
+SYSTEM_PROMPT = """Você é um especialista em criar flashcards para revisão
+espaçada no Anki. Sua tarefa é converter anotações de estudo em flashcards
+de alta qualidade que aproveitem a *active recall*.
 
-Regras para gerar bons flashcards:
-- Cada flashcard deve testar UM conceito específico
-- A frente (front) deve ser uma pergunta direta ou afirmação incompleta
-- O verso (back) deve ser conciso, claro e completo
-- Priorize: definições, leis/normas, fórmulas, comparações, exceções, exemplos-chave
-- Evite flashcards muito genéricos ou com respostas longas demais
+═══ PRINCÍPIOS (regras de SuperMemo, adaptadas) ═══
 
-Retorne SOMENTE um array JSON válido, sem markdown, sem explicações, apenas o JSON:
+1. ATOMICIDADE — cada flashcard testa UM único fato/conceito. Se a anotação
+   tem 3 ideias, crie 3 cards separados — nunca um card composto.
+
+2. INFORMAÇÃO MÍNIMA — formule a pergunta da forma mais simples possível.
+   Se o verso tem mais que 2 frases curtas, divida em mais cards.
+
+3. ACTIVE RECALL — a frente DEVE ser uma pergunta direta, lacuna a preencher
+   ou afirmação a completar. Nunca uma simples afirmação informativa.
+
+4. EVITE ENUMERAÇÕES NO VERSO — se a resposta é "1) X, 2) Y, 3) Z", crie
+   três cards (um por item) ou use cloze deletions.
+
+5. CONTEXTO MÍNIMO NA FRENTE — inclua só o necessário para tornar a
+   pergunta inequívoca. Não copie parágrafos inteiros.
+
+6. PRIORIZE: definições, leis/normas, fórmulas, datas-chave, comparações
+   "X vs Y", causa↔efeito, exceções, exemplos canônicos, vocabulário.
+
+7. EVITE: perguntas sim/não, perguntas vagas ("o que é importante?"),
+   reproduzir frases longas literalmente, repetir o mesmo conceito em
+   cards quase iguais.
+
+8. LINGUAGEM — use o MESMO idioma da anotação (português se PT, inglês se
+   EN). Tom direto, vocabulário técnico preservado.
+
+9. NOMES PRÓPRIOS — sempre incluídos quando relevantes (autores, leis,
+   datas históricas, casos específicos).
+
+10. SEM META-COMENTÁRIOS — nunca escreva "de acordo com a anotação...",
+    "no texto consta...". Trate o card como conhecimento autônomo.
+
+═══ FORMATO DE SAÍDA ═══
+
+Retorne EXCLUSIVAMENTE um array JSON válido, sem markdown, sem
+comentários, sem texto adicional:
+
 [
-  {"front": "pergunta ou afirmação incompleta", "back": "resposta completa"},
+  {"front": "...", "back": "..."},
   ...
-]"""
+]
+
+Cada objeto tem APENAS as chaves "front" e "back" (strings não vazias).
+Se a anotação for vazia ou trivial, retorne [].
+"""
+
+
+def _strip_code_fence(raw: str) -> str:
+    """Remove cercas markdown ```json ... ``` se IA insistir em retornar."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        # Remove primeira linha (```json ou ```) e última cerca
+        lines = raw.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    return raw
+
+
+def _validate_and_clean(cards: list, max_cards: int) -> list[dict]:
+    """Filtra cards malformados, deduplica por frente normalizada, aplica teto."""
+    if max_cards <= 0:
+        return []
+    out = []
+    seen = set()
+    for c in cards:
+        if not isinstance(c, dict):
+            continue
+        front = (c.get("front") or "").strip()
+        back  = (c.get("back")  or "").strip()
+        if not front or not back:
+            continue
+        key = front.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"front": front, "back": back})
+        if len(out) >= max_cards:
+            break
+    return out
 
 
 def gerar_flashcards(
@@ -305,52 +377,85 @@ def gerar_flashcards(
     conteudo: str,
     max_cards: int = MAX_FLASHCARDS_POR_AULA,
 ) -> list[dict]:
-    prompt = f"""Categoria: {categoria}
-Título: {titulo}
-Data: {data}
+    """Gera ATÉ `max_cards` flashcards para UM item de conteúdo.
 
-Conteúdo:
----
+    Limite é por chamada — cada item (aula/dia) tem seu próprio orçamento.
+    O loop em `processar_*` chama esta função uma vez por item, então o
+    teto se aplica naturalmente por aula → matéria → todo o pipeline.
+    """
+    prompt = f"""Crie flashcards a partir das anotações abaixo.
+
+CONTEXTO
+- Matéria/Categoria: {categoria}
+- Título do conteúdo: {titulo}
+- Data: {data or "(não informada)"}
+- Tamanho: {len(conteudo)} caracteres
+
+ORÇAMENTO
+- Gere NO MÁXIMO {max_cards} flashcards.
+- É melhor entregar POUCOS cards excelentes do que muitos medianos.
+- Se a anotação for curta/trivial, retorne menos cards (ou [] se vazia).
+
+ANOTAÇÃO
+\"\"\"
 {conteudo}
----
+\"\"\"
 
-Gere até {max_cards} flashcards. Retorne SOMENTE o array JSON."""
+Responda APENAS com o array JSON conforme as regras do sistema."""
 
     provider_label = "Gemini" if AI_PROVIDER == "gemini" else "Claude"
-    log.info(f"  → Enviando para {provider_label}: {len(conteudo)} caracteres")
+    log.info(f"  → Enviando para {provider_label}: {len(conteudo)} caracteres "
+             f"(orçamento: até {max_cards} cards)")
 
     raw = ""
     try:
         if AI_PROVIDER == "gemini":
-            resp = gemini_client.models.generate_content(
-                model=GEMINI_MODEL,
-                config=_genai_types.GenerateContentConfig(
+            cfg_kwargs = {
+                "system_instruction": SYSTEM_PROMPT,
+                "max_output_tokens":  4096,
+                "temperature":        0.3,
+                "top_p":              0.9,
+                "response_mime_type": "application/json",
+            }
+            try:
+                gen_cfg = _genai_types.GenerateContentConfig(**cfg_kwargs)
+            except TypeError:
+                # SDK antigo sem suporte a algum parâmetro — degrada com graça.
+                gen_cfg = _genai_types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    max_output_tokens=2048,
-                ),
-                contents=prompt,
+                    max_output_tokens=4096,
+                )
+            resp = gemini_client.models.generate_content(
+                model=GEMINI_MODEL, config=gen_cfg, contents=prompt,
             )
-            raw = resp.text.strip()
+            raw = (resp.text or "").strip()
         else:
             resp = claude_client.messages.create(
                 model="claude-opus-4-5",
-                max_tokens=2048,
+                max_tokens=4096,
+                temperature=0.3,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = resp.content[0].text.strip()
 
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
+        raw = _strip_code_fence(raw)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            log.error(f"  ✗ Resposta não é array JSON: {type(parsed).__name__}")
+            return []
 
-        flashcards = json.loads(raw)
-        log.info(f"  → {len(flashcards)} flashcards gerados")
-        return flashcards
+        cards = _validate_and_clean(parsed, max_cards)
+        dropped = len(parsed) - len(cards)
+        if dropped > 0:
+            log.info(f"  → {len(cards)}/{max_cards} flashcards válidos "
+                     f"({dropped} descartados: malformados ou duplicados)")
+        else:
+            log.info(f"  → {len(cards)}/{max_cards} flashcards gerados")
+        return cards
 
     except json.JSONDecodeError as e:
-        log.error(f"  ✗ Erro ao parsear JSON: {e}\nResposta: {raw[:300]}")
+        log.error(f"  ✗ Erro ao parsear JSON: {e}\n     Resposta: {raw[:300]}")
         return []
     except Exception as e:
         log.error(f"  ✗ Erro na API {provider_label}: {e}")
@@ -707,10 +812,23 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
         time.sleep(1)
 
 
+_PER_DB_OVERRIDE_KEYS = (
+    "parent_name_prop", "child_db_keyword", "child_title_prop",
+    "child_content_prop", "child_date_prop", "use_sync_field",
+    "child_sync_prop", "child_sync_done",
+    "child_status_prop", "child_status_complete",
+)
+
+
 def processar_plano(cfg: dict) -> dict:
     """
     Modo plano: itera por todos os databases selecionados.
     Cada database vira um subdeck separado no Anki.
+
+    Se a entrada de `selected_dbs` tem chave `props` (mapeamento por tabela
+    salvo pela UI multi-DB), seus valores sobrescrevem os do `cfg` para
+    AQUELA tabela. Mantém back-compat: entradas sem `props` usam o cfg
+    global (comportamento antigo).
     """
     total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
 
@@ -724,7 +842,13 @@ def processar_plano(cfg: dict) -> dict:
         db_id   = entry["id"]
         db_name = entry["name"]
         log.info(f"\n{'='*50}\n📋 {db_name}")
-        _processar_db_plano(db_id, db_name, cfg, total)
+        sub_cfg = dict(cfg)
+        per_db_props = entry.get("props") or {}
+        if per_db_props:
+            for k in _PER_DB_OVERRIDE_KEYS:
+                if k in per_db_props:
+                    sub_cfg[k] = per_db_props[k]
+        _processar_db_plano(db_id, db_name, sub_cfg, total)
 
     return total
 

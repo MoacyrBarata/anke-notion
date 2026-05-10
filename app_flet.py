@@ -438,6 +438,9 @@ def main(page: ft.Page):
         setup_parent_db_name=None,
         setup_selected_dbs=[],
         setup_child_props=None,
+        # Plano multi-DB: mapeamento por tabela (canonical keys) e tab ativa.
+        setup_props_per_db={},
+        setup_active_db_id=None,
     )
 
     # ── Shared setting fields ──────────────────────────────────────────────────
@@ -899,6 +902,8 @@ def main(page: ft.Page):
             "setup_parent_db_name":  None,
             "setup_selected_dbs":    [],
             "setup_child_props":     None,
+            "setup_props_per_db":    {},
+            "setup_active_db_id":    None,
             "notion_dbs":            None,
             "notion_dbs_err":        None,
             "notion_loading":        False,
@@ -963,12 +968,14 @@ def main(page: ft.Page):
                         ft.Radio(value="hierarchical", fill_color=C_ACCENT),
                         ft.Column([
                             ft.Text("🗂  Hierárquico", color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
-                            dim("Você tem duas tabelas: uma com matérias/categorias e outra "
-                                "com as aulas/conteúdos dentro de cada categoria.", size=12),
+                            dim("Uma tabela-mãe lista as matérias/categorias e, dentro "
+                                "de cada linha, há outra tabela embutida com as aulas. "
+                                "Escolha este modo se suas anotações vivem aninhadas.",
+                                size=12),
                             ft.Container(height=4),
-                            ft.Text("Exemplo: Tabela \"Disciplinas\" → linhas \"Biologia\", "
-                                    "\"História\" → cada uma linkada a uma tabela de Aulas com "
-                                    "o conteúdo real.",
+                            ft.Text("Exemplo: tabela \"Disciplinas\" → linha \"Biologia\" → "
+                                    "abre uma página com a tabela \"Aulas\" → cada aula "
+                                    "vira flashcards.",
                                     color=C_MUTED, size=11, italic=True),
                         ], spacing=2, expand=True),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
@@ -980,13 +987,31 @@ def main(page: ft.Page):
                     content=ft.Row([
                         ft.Radio(value="flat", fill_color=C_ACCENT),
                         ft.Column([
-                            ft.Text("📋  Plano", color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
-                            dim("Você tem uma única tabela onde cada linha é um item "
-                                "que vira flashcard diretamente.", size=12),
+                            ft.Text("📋  Plano (várias tabelas)",
+                                    color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
+                            dim("Você tem uma ou mais tabelas no mesmo nível — sem "
+                                "tabela-mãe. Cada tabela representa uma matéria diferente "
+                                "e cada linha dentro dela é uma anotação que vira "
+                                "flashcards. Você seleciona TODAS as tabelas que quer "
+                                "sincronizar de uma vez.",
+                                size=12),
                             ft.Container(height=4),
-                            ft.Text("Exemplo: Tabela \"Ideias de jogos\" onde cada linha tem "
-                                    "título, descrição e tags — cada linha gera seus flashcards.",
+                            ft.Text("Exemplo: tabela \"Matemática I\", tabela "
+                                    "\"Direito Empresarial\", tabela \"Economia\" — "
+                                    "cada linha de cada tabela é uma aula. Vira o deck "
+                                    "Anki: Notion::Sync::Matemática I, Notion::Sync::"
+                                    "Direito Empresarial, etc.",
                                     color=C_MUTED, size=11, italic=True),
+                            ft.Container(height=4),
+                            ft.Row([
+                                ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
+                                        color=C_ACCENT, size=13),
+                                ft.Text("No próximo passo você marca quantas tabelas "
+                                        "quiser (multi-seleção).",
+                                        color=C_ACCENT, size=11,
+                                        weight=ft.FontWeight.W_500, expand=True),
+                            ], spacing=6,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         ], spacing=2, expand=True),
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
                     bgcolor=C_GLASS, border=_ball(1, C_BORDER),
@@ -1202,9 +1227,18 @@ def main(page: ft.Page):
                 state["setup_step"] = 3; rebuild()
 
         ctrls.append(glass(ft.Column([
-            h("Passo 2 — Selecionar tabelas", size=15),
-            dim(f"{len(dbs)} tabela(s) encontrada(s) — {n_sel} selecionada(s). "
-                "Expanda para ver as colunas. Cada tabela vira um deck no Anki.", size=12),
+            h("Passo 2 — Selecionar tabelas (modo Plano)", size=15),
+            dim(f"{len(dbs)} tabela(s) acessível(eis) à integração — "
+                f"{n_sel} marcada(s).",
+                size=12),
+            ft.Container(height=4),
+            ft.Row([
+                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=13),
+                ft.Text("Marque uma tabela por matéria. Cada tabela vira um "
+                        "subdeck no Anki (Notion::Sync::Nome-da-tabela). "
+                        "Cada linha da tabela vira flashcards.",
+                        color=C_DIM, size=11, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
             ft.Container(height=12),
             ft.Column(db_cards, spacing=8),
             ft.Container(height=16),
@@ -1212,61 +1246,157 @@ def main(page: ft.Page):
                    alignment=ft.MainAxisAlignment.END, spacing=10),
         ], spacing=0)))
 
+    # ── Helpers Step 3: cards explicativos por campo ───────────────────────────
+    def _explained_field(icon, function_label, control, role_tag,
+                          explanation, example=None):
+        """Field stylized as a card with role badge + explanation of usage."""
+        body = [
+            ft.Row([
+                ft.Icon(icon, color=C_ACCENT, size=16),
+                ft.Text(function_label, color=C_TEXT, size=13,
+                        weight=ft.FontWeight.W_600, expand=True),
+                ft.Container(
+                    content=ft.Text(role_tag, color=C_BG, size=10,
+                                    weight=ft.FontWeight.W_700),
+                    bgcolor=C_ACCENT, border_radius=6,
+                    padding=ft.padding.Padding(left=6, right=6, top=2, bottom=2),
+                ),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Container(height=6),
+            control,
+            ft.Container(height=6),
+            ft.Row([
+                ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=C_DIM, size=12),
+                ft.Text(explanation, color=C_DIM, size=11, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+        ]
+        if example:
+            body.append(ft.Row([
+                ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED, color=C_MUTED, size=12),
+                ft.Text(example, color=C_MUTED, size=11,
+                        italic=True, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START))
+        return ft.Container(
+            content=ft.Column(body, spacing=0, tight=True),
+            bgcolor=C_GLASS, border=_ball(1, C_BORDER),
+            border_radius=12, padding=12,
+            margin=ft.margin.Margin(left=0, right=0, top=0, bottom=8),
+        )
+
     # ── Step 3: Field mapping ──────────────────────────────────────────────────
     def _build_step3(ctrls, token):
-        db_id   = state["setup_parent_db_id"]
-        db_name = state["setup_parent_db_name"]
         mode    = state["setup_mode"]
-        props   = get_database_properties(token, db_id)
-        sample  = get_sample_page(token, db_id)
+        sel_dbs = state.get("setup_selected_dbs") or [
+            {"id": state["setup_parent_db_id"],
+             "name": state["setup_parent_db_name"] or ""}
+        ]
+
+        # Active-DB tracker (modo plano com várias tabelas).
+        per_db = state.setdefault("setup_props_per_db", {})
+        sel_ids = [d["id"] for d in sel_dbs]
+        active_id = state.get("setup_active_db_id")
+        if active_id not in sel_ids:
+            active_id = sel_ids[0]
+            state["setup_active_db_id"] = active_id
+        active = next(d for d in sel_dbs if d["id"] == active_id)
+        db_id, db_name = active["id"], active["name"]
+
+        props  = get_database_properties(token, db_id)
+        sample = get_sample_page(token, db_id)
 
         if not props:
             ctrls.append(glass(ft.Row([
                 ft.Icon(ft.Icons.ERROR_ROUNDED, color=C_ERROR),
-                ft.Text("Não foi possível buscar propriedades. Verifique o token.", color=C_ERROR, size=13),
+                ft.Text(f"Não foi possível buscar propriedades de \"{db_name}\". "
+                        f"Verifique o token e o acesso da integração.",
+                        color=C_ERROR, size=13),
             ], spacing=8)))
             return
 
         hints   = suggest_fields(props)
+        saved   = per_db.get(db_id, {})
         t_opts  = props_by_type(props, "title") or list(props.keys())
         tx_opts = ["(nenhum)"] + props_by_type(props, "rich_text")
-        d_opts  = ["(nenhum)"] + props_by_type(props, "date", "created_time", "last_edited_time")
+        d_opts  = ["(nenhum)"] + props_by_type(props, "date",
+                                                "created_time", "last_edited_time")
         s_opts  = ["(nenhum)"] + props_by_type(props, "select", "status")
         tx_all  = ["(nenhum)"] + props_by_type(props, "rich_text", "title")
 
-        dd_title    = dropdown("Campo título", t_opts,   hints.get("title"))
-        dd_content  = dropdown("Campo conteúdo (texto/resumo)", tx_opts, hints.get("content"))
-        dd_date     = dropdown("Campo data (opcional)", d_opts,  hints.get("date"))
-        dd_sync_p   = dropdown("Campo sync (opcional)", s_opts,  hints.get("sync"))
-        dd_status_p = dropdown("Campo status (filtro, opcional)", s_opts, hints.get("status"))
-        dd_child_t  = dropdown("Campo título do item filho", tx_all) if mode == "hierarchical" else None
-        f_kw        = field("Palavra-chave do DB filho", "Aulas")    if mode == "hierarchical" else None
-        f_sync_done = field("Valor = sincronizado", "✅ Sincronizado")
-        f_status_v  = field("Valor = pronto", "✅ Completa")
+        def _v(saved_key, hint_key=None, default="(nenhum)"):
+            v = saved.get(saved_key)
+            if v:
+                return v
+            if hint_key:
+                return hints.get(hint_key, default)
+            return default
 
-        w_title   = field_with_hint(dd_title,
-            "Coluna que dá nome ao item — vira o título do flashcard.")
-        w_content = field_with_hint(dd_content,
-            "Coluna com o texto/resumo principal — usado para gerar as perguntas e respostas.")
-        w_date    = field_with_hint(dd_date,
-            "Filtra itens a partir de uma data. Deixe em (nenhum) para processar tudo.")
-        w_sync_p  = field_with_hint(dd_sync_p,
-            "Coluna onde o app marca o item como já sincronizado, evitando duplicatas no Anki.")
-        w_sync_v  = field_with_hint(f_sync_done,
-            "Valor que será gravado nessa coluna quando o item for sincronizado.")
-        w_status_p = field_with_hint(dd_status_p,
-            "Filtra: só processa linhas cujo status seja o valor abaixo. Útil para ignorar rascunhos.")
-        w_status_v = field_with_hint(f_status_v,
-            "Valor da coluna de status que indica 'pronto para sincronizar'.")
-        w_child_t = field_with_hint(dd_child_t,
-            "No DB filho, qual coluna tem o título de cada aula/item.") if dd_child_t else None
-        w_kw      = field_with_hint(f_kw,
-            "Palavra que identifica o DB filho linkado. Ex: se a relação se chama 'Aulas', use Aulas.") if f_kw else None
-        use_sync  = ft.Switch(value=True, active_color=C_ACCENT, label="Usar campo de sync no Notion",
-                              label_text_style=ft.TextStyle(color=C_DIM, size=13))
+        def _select_options(prop_name: str | None) -> list[str]:
+            """Lista de opções de um campo select/status do Notion."""
+            if not prop_name or prop_name == "(nenhum)":
+                return []
+            p = props.get(prop_name) or {}
+            ptype = p.get("type", "")
+            if ptype not in ("select", "status"):
+                return []
+            return [o["name"] for o in (p.get(ptype) or {}).get("options", [])]
 
-        # Preview card
-        sel_dbs = state.get("setup_selected_dbs") or [{"name": db_name}]
+        dd_title    = dropdown("Campo título",
+            t_opts, _v("parent_name_prop", "title"))
+        dd_content  = dropdown("Campo conteúdo (texto/resumo)",
+            tx_opts, _v("child_content_prop", "content"))
+        dd_date     = dropdown("Campo data (opcional)",
+            d_opts, _v("child_date_prop", "date"))
+        dd_child_t  = dropdown("Campo título do item filho",
+            tx_all, _v("child_title_prop")) if mode == "hierarchical" else None
+        f_kw        = field("Palavra-chave do DB filho",
+            saved.get("child_db_keyword") or "Aulas") if mode == "hierarchical" else None
+
+        # Sync prop + value (value vira dropdown quando há options reais).
+        _initial_sync_p = _v("child_sync_prop", "sync")
+        sync_opts_list  = _select_options(_initial_sync_p)
+        if sync_opts_list:
+            _sync_default = saved.get("child_sync_done") or "✅ Sincronizado"
+            if _sync_default not in sync_opts_list:
+                _sync_default = sync_opts_list[0]
+            f_sync_done = dropdown("Valor = sincronizado",
+                                    sync_opts_list, _sync_default)
+        else:
+            f_sync_done = field("Valor = sincronizado",
+                saved.get("child_sync_done") or "✅ Sincronizado")
+
+        # Status prop + value.
+        _initial_status_p = _v("child_status_prop", "status")
+        status_opts_list  = _select_options(_initial_status_p)
+        if status_opts_list:
+            _status_default = saved.get("child_status_complete") or "✅ Completa"
+            if _status_default not in status_opts_list:
+                _status_default = status_opts_list[0]
+            f_status_v = dropdown("Valor = pronto",
+                                   status_opts_list, _status_default)
+        else:
+            f_status_v = field("Valor = pronto",
+                saved.get("child_status_complete") or "✅ Completa")
+
+        # Forward declaration so on_change pode capturar/rebuildar.
+        def _refresh_after_prop_change(e=None):
+            # Captura tudo ANTES de rebuildar pra não perder edição em curso.
+            _persist_active()
+            rebuild()
+
+        dd_sync_p   = dropdown("Campo sync (opcional)",
+            s_opts, _initial_sync_p)
+        dd_sync_p.on_change   = _refresh_after_prop_change
+        dd_status_p = dropdown("Campo status (filtro, opcional)",
+            s_opts, _initial_status_p)
+        dd_status_p.on_change = _refresh_after_prop_change
+
+        use_sync    = ft.Switch(
+            value=saved.get("use_sync_field", True),
+            active_color=C_ACCENT, label="Usar campo de sync no Notion",
+            label_text_style=ft.TextStyle(color=C_DIM, size=13),
+        )
+
+        # ── Preview card ───────────────────────────────────────────────────────
         deck_root_preview = "Deck raiz"
         decks_preview = " · ".join(
             f"{deck_root_preview}::{d['name']}" for d in sel_dbs[:3]
@@ -1290,7 +1420,8 @@ def main(page: ft.Page):
                 ft.Row([ft.Text("📚 Deck:",    color=C_MUTED, size=11, width=80),
                         ft.Text(decks_preview, color=C_DIM,  size=11)], spacing=4),
                 ft.Row([ft.Text("📄 Título:",  color=C_MUTED, size=11, width=80),
-                        ft.Text(s_title,       color=C_TEXT,  size=12, weight=ft.FontWeight.W_500)], spacing=4),
+                        ft.Text(s_title,       color=C_TEXT,  size=12,
+                                weight=ft.FontWeight.W_500)], spacing=4),
                 *([ ft.Row([ft.Text("📅 Data:", color=C_MUTED, size=11, width=80),
                             ft.Text(s_date,    color=C_DIM,  size=11)], spacing=4) ] if s_date else []),
                 ft.Row([ft.Text("📝 Conteúdo:", color=C_MUTED, size=11, width=80),
@@ -1308,51 +1439,234 @@ def main(page: ft.Page):
             padding=14,
         )
 
+        # ── Save / nav handlers ────────────────────────────────────────────────
+        def _capture_active() -> dict:
+            """Snapshot dos dropdowns/fields para o DB ativo (canonical keys)."""
+            return {
+                "parent_name_prop":      dd_title.value,
+                "child_db_keyword":      f_kw.value if f_kw else "",
+                "child_title_prop":      dd_child_t.value if dd_child_t else dd_title.value,
+                "child_content_prop":    None if dd_content.value == "(nenhum)" else dd_content.value,
+                "child_date_prop":       None if dd_date.value    == "(nenhum)" else dd_date.value,
+                "use_sync_field":        bool(use_sync.value),
+                "child_sync_prop":       None if dd_sync_p.value  == "(nenhum)" else dd_sync_p.value,
+                "child_sync_done":       f_sync_done.value or "✅ Sincronizado",
+                "child_status_prop":     None if dd_status_p.value == "(nenhum)" else dd_status_p.value,
+                "child_status_complete": f_status_v.value or None,
+            }
+
+        def _persist_active():
+            per_db[db_id] = _capture_active()
+
+        def _switch_to(new_id):
+            _persist_active()
+            state["setup_active_db_id"] = new_id
+            rebuild()
+
         def back3(e):
+            _persist_active()
             state["setup_step"] = 2; rebuild()
 
         def next3(e):
+            _persist_active()
+            # Garante que TODAS as tabelas selecionadas têm mapeamento.
+            unconfigured = [d for d in sel_dbs if d["id"] not in per_db]
+            if unconfigured and mode == "flat":
+                names = ", ".join(d["name"] for d in unconfigured[:3])
+                snack(f"Configure também: {names}"
+                      f"{'…' if len(unconfigured) > 3 else ''}",
+                      C_WARNING)
+                state["setup_active_db_id"] = unconfigured[0]["id"]
+                rebuild()
+                return
+            # Mantém setup_child_props (legacy) com props do DB ativo.
+            active_props = per_db[db_id]
             state["setup_child_props"] = {
-                "parent_title_prop": dd_title.value,
-                "child_keyword":     f_kw.value if f_kw else "",
-                "child_title":       dd_child_t.value if dd_child_t else dd_title.value,
-                "content_prop":      None if dd_content.value == "(nenhum)" else dd_content.value,
-                "date_prop":         None if dd_date.value    == "(nenhum)" else dd_date.value,
-                "use_sync":          use_sync.value,
-                "sync_prop":         None if dd_sync_p.value  == "(nenhum)" else dd_sync_p.value,
-                "sync_done":         f_sync_done.value or "✅ Sincronizado",
-                "status_prop":       None if dd_status_p.value == "(nenhum)" else dd_status_p.value,
-                "status_val":        f_status_v.value or None,
+                "parent_title_prop": active_props["parent_name_prop"],
+                "child_keyword":     active_props["child_db_keyword"],
+                "child_title":       active_props["child_title_prop"],
+                "content_prop":      active_props["child_content_prop"],
+                "date_prop":         active_props["child_date_prop"],
+                "use_sync":          active_props["use_sync_field"],
+                "sync_prop":         active_props["child_sync_prop"],
+                "sync_done":         active_props["child_sync_done"],
+                "status_prop":       active_props["child_status_prop"],
+                "status_val":        active_props["child_status_complete"],
             }
             state["setup_step"] = 4; rebuild()
 
-        hier_extras = ([
-            ft.Divider(color=C_BORDER, height=1),
-            dim("🔗  Database filho", size=12, color=C_DIM),
-            w_kw, w_child_t,
-        ] if mode == "hierarchical" else [])
-
+        # ── Badge bar (modo plano com várias tabelas) ──────────────────────────
         ctrls.append(preview_card)
         ctrls.append(ft.Container(height=10))
+
+        if mode == "flat" and len(sel_dbs) > 1:
+            done_count = sum(1 for d in sel_dbs if d["id"] in per_db)
+            ctrls.append(glass(ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.LAYERS_OUTLINED, color=C_ACCENT, size=18),
+                    ft.Text("Mapeie cada tabela individualmente",
+                            color=C_TEXT, size=14, weight=ft.FontWeight.W_600,
+                            expand=True),
+                    ft.Text(f"{done_count}/{len(sel_dbs)} configuradas",
+                            color=C_DIM, size=12),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(height=4),
+                dim("Clique em uma badge para ajustar os campos daquela tabela. "
+                    "Mudanças são salvas automaticamente ao trocar de tabela ou "
+                    "avançar.", size=11),
+                ft.Container(height=10),
+                ft.Row([
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(
+                                ft.Icons.CHECK_CIRCLE_ROUNDED if d["id"] in per_db
+                                else ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED,
+                                color=(C_BG if d["id"] == active_id
+                                       else (C_SUCCESS if d["id"] in per_db
+                                             else C_DIM)),
+                                size=14),
+                            ft.Text(d["name"],
+                                    color=(C_BG if d["id"] == active_id
+                                           else (C_TEXT if d["id"] in per_db
+                                                 else C_DIM)),
+                                    size=12, weight=ft.FontWeight.W_600),
+                        ], spacing=6,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        bgcolor=(C_ACCENT if d["id"] == active_id
+                                 else (f"{C_SUCCESS},0.08" if d["id"] in per_db
+                                       else C_GLASS)),
+                        border=_ball(
+                            2 if d["id"] == active_id else 1,
+                            (C_ACCENT if d["id"] == active_id
+                             else (f"{C_SUCCESS},0.4" if d["id"] in per_db
+                                   else C_BORDER))),
+                        border_radius=20,
+                        padding=ft.padding.Padding(left=12, right=14, top=7, bottom=7),
+                        on_click=lambda e, did=d["id"]: _switch_to(did),
+                    )
+                    for d in sel_dbs
+                ], spacing=8, wrap=True),
+            ], spacing=0)))
+            ctrls.append(ft.Container(height=10))
+
+        # ── Cards explicativos por campo ───────────────────────────────────────
         ctrls.append(glass(ft.Column([
-            h(f"Passo 3 — Mapeamento de campos: {db_name}", size=15),
-            dim("Confira os campos sugeridos abaixo e ajuste se necessário.", size=12),
-            ft.Container(height=10),
-            dim("📌  Identificação", size=12, color=C_DIM),
-            w_title,
-            *hier_extras,
-            ft.Divider(color=C_BORDER, height=1),
-            dim("📝  Conteúdo para gerar flashcards", size=12, color=C_DIM),
-            w_content, w_date,
-            ft.Divider(color=C_BORDER, height=1),
-            dim("🔄  Controle de sincronização", size=12, color=C_DIM),
-            use_sync,
-            w_sync_p, w_sync_v,
-            w_status_p, w_status_v,
-            ft.Container(height=8),
-            ft.Row([ghost_btn("← Voltar", back3), btn("Próximo →", next3)],
-                   alignment=ft.MainAxisAlignment.END, spacing=10),
-        ], spacing=8)))
+            ft.Row([
+                ft.Icon(ft.Icons.TABLE_VIEW_ROUNDED, color=C_ACCENT, size=18),
+                h(f"Mapeamento — {db_name}", size=15),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            dim("Cada campo abaixo informa qual coluna do Notion alimenta uma "
+                "função específica do flashcard ou da sincronização.",
+                size=12),
+        ], spacing=4)))
+        ctrls.append(ft.Container(height=10))
+
+        # Identificação
+        ctrls.append(_explained_field(
+            ft.Icons.TITLE_ROUNDED, "Coluna de título", dd_title,
+            "TÍTULO",
+            "Identifica cada linha. Vai aparecer como título do flashcard "
+            "no Anki e nas tags. Use a coluna do tipo 'title' do Notion.",
+            "Ex: 'Aula', 'Tópico', 'Nome'."
+        ))
+
+        if mode == "hierarchical":
+            ctrls.append(_explained_field(
+                ft.Icons.SEARCH_ROUNDED, "Palavra-chave do DB filho", f_kw,
+                "BUSCA",
+                "Trecho do nome da tabela aninhada (dentro de cada matéria) "
+                "que contém as aulas. O app procura blocos child_database cujo "
+                "título contenha essa palavra.",
+                "Ex: 'Aulas', 'Anotações', 'Diário'."
+            ))
+            ctrls.append(_explained_field(
+                ft.Icons.SUBJECT_ROUNDED, "Campo título do item filho", dd_child_t,
+                "TÍTULO FILHO",
+                "Coluna na tabela aninhada que dá nome a cada aula/item — "
+                "vira o título do flashcard.",
+                None
+            ))
+
+        # Conteúdo
+        ctrls.append(_explained_field(
+            ft.Icons.NOTES_ROUNDED, "Coluna de conteúdo", dd_content,
+            "MATÉRIA-PRIMA",
+            "Coluna com o texto que a IA usará para gerar perguntas e "
+            "respostas. Quanto mais detalhada a anotação, melhor o flashcard. "
+            "Deixe em (nenhum) se preferir extrair só dos blocos da página.",
+            "Ex: 'Conteúdo', 'Resumo', 'Anotações'."
+        ))
+        ctrls.append(_explained_field(
+            ft.Icons.CALENDAR_TODAY_ROUNDED, "Coluna de data (opcional)", dd_date,
+            "DATA",
+            "Aparece como tag 'data:YYYY-MM-DD' no Anki e no rodapé do "
+            "flashcard. Útil para ordenar revisões por data da aula.",
+            "Deixe em (nenhum) se sua tabela não tem essa informação."
+        ))
+
+        # Controle de sincronização
+        ctrls.append(ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.SYNC_ALT_ROUNDED, color=C_DIM, size=14),
+                ft.Text("Controle de re-sincronização (opcional)",
+                        color=C_DIM, size=12, weight=ft.FontWeight.W_500,
+                        expand=True),
+                use_sync,
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.Padding(left=4, right=4, top=8, bottom=4),
+        ))
+        ctrls.append(_explained_field(
+            ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
+            "Campo sync (Notion)", dd_sync_p,
+            "MARCA",
+            "Coluna select onde o app vai gravar o status após sincronizar "
+            "com sucesso. Funciona junto com o histórico SQLite local. "
+            "Deixe em (nenhum) se prefere usar APENAS o histórico local.",
+            "Ex: select 'Sincronização' com opção '✅ Sincronizado'."
+        ))
+        _sync_value_hint = (
+            "Escolha qual opção do select será gravada quando o item for "
+            "sincronizado. As opções acima vêm direto do seu Notion."
+            if sync_opts_list
+            else "Texto exato (case-sensitive) que o app grava no campo sync. "
+                 "Selecione um campo sync acima para ver as opções existentes."
+        )
+        ctrls.append(_explained_field(
+            ft.Icons.LABEL_OUTLINE_ROUNDED,
+            "Valor que indica 'sincronizado'", f_sync_done,
+            "VALOR-OK",
+            _sync_value_hint,
+            None
+        ))
+        ctrls.append(_explained_field(
+            ft.Icons.FILTER_LIST_ROUNDED,
+            "Campo status (filtro)", dd_status_p,
+            "FILTRO",
+            "Restringe o sync a linhas cujo status seja o valor abaixo. "
+            "Ideal para ignorar rascunhos. Deixe em (nenhum) para processar "
+            "todas as linhas pendentes.",
+            "Ex: select 'Status' com opção '✅ Completa'."
+        ))
+        _status_value_hint = (
+            "Apenas linhas cujo status seja igual a esta opção serão "
+            "processadas. As opções acima vêm direto do seu Notion."
+            if status_opts_list
+            else "Texto exato do valor que indica 'pronto para sincronizar'. "
+                 "Selecione um campo status acima para ver as opções existentes."
+        )
+        ctrls.append(_explained_field(
+            ft.Icons.RULE_ROUNDED,
+            "Valor = pronto para sincronizar", f_status_v,
+            "VALOR-FILTRO",
+            _status_value_hint,
+            None
+        ))
+
+        ctrls.append(ft.Container(height=8))
+        ctrls.append(ft.Row([
+            ghost_btn("← Voltar", back3),
+            btn("Próximo →", next3),
+        ], alignment=ft.MainAxisAlignment.END, spacing=10))
 
     # ── Step 4: Anki deck ──────────────────────────────────────────────────────
     def _build_step4(ctrls):
@@ -1384,12 +1698,18 @@ def main(page: ft.Page):
         def save(e):
             p = state.get("setup_child_props") or {}
             ex = load_notion_config()
+            per_db = state.get("setup_props_per_db") or {}
+            # Embute mapeamento por tabela em cada selected_dbs[].props
+            sel_dbs_with_props = [
+                {**d, "props": per_db[d["id"]]} if d.get("id") in per_db else d
+                for d in (state.get("setup_selected_dbs") or [])
+            ]
             save_notion_config({
                 "version":               2,
                 "mode":                  state["setup_mode"],
                 "parent_db_id":          state["setup_parent_db_id"],
                 "parent_db_name":        state["setup_parent_db_name"],
-                "selected_dbs":          state.get("setup_selected_dbs", []),
+                "selected_dbs":          sel_dbs_with_props,
                 "parent_name_prop":      p.get("parent_title_prop", ""),
                 "child_db_keyword":      p.get("child_keyword", ""),
                 "child_title_prop":      p.get("child_title", ""),

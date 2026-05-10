@@ -224,7 +224,21 @@ Motor de sincronização. **Pode rodar standalone:** `python notion_anki_sync.py
   "child_status_complete": "string|null", // Valor = "pronto para processar"
   "anki_deck_root": "string",      // Deck raiz no Anki
   "selected_dbs": [                // Modo flat — múltiplos data_sources (opcional)
-    {"id": "data_source_id", "name": "Nome exibido"}
+    {
+      "id":   "data_source_id",
+      "name": "Nome exibido",
+      "props": {                   // Mapeamento por tabela (canonical keys, opcional).
+                                   // Sobrescreve o cfg global APENAS para esta tabela.
+        "parent_name_prop":      "Aula",
+        "child_content_prop":    "Conteúdo",
+        "child_date_prop":       "Data",
+        "use_sync_field":        true,
+        "child_sync_prop":       "Sincronização",
+        "child_sync_done":       "✅ Sincronizado",
+        "child_status_prop":     "Status",
+        "child_status_complete": "✅ Completa"
+      }
+    }
   ],
   "last_sync_time": "ISO8601|null" // Atualizado após cada sync bem-sucedido
 }
@@ -468,7 +482,20 @@ top-level.
 | `setup_mode` | str | "hierarchical" \| "flat" |
 | `setup_parent_db_id` / `setup_parent_db_name` | str \| None | DB principal escolhido |
 | `setup_selected_dbs` | list[dict] | Múltiplos DBs no modo flat |
-| `setup_child_props` | dict \| None | Mapeamento de campos |
+| `setup_child_props` | dict \| None | Mapeamento de campos do DB ativo (legacy) |
+| `setup_props_per_db` | dict[str, dict] | Mapeamento canonical por data_source_id (Plano multi-DB) |
+| `setup_active_db_id` | str \| None | Tab ativa no step 3 quando flat + várias tabelas |
+
+#### Step 3 — Valor de select dinâmico
+
+Quando o usuário escolhe um campo `sync` ou `status` (tipo `select`/`status`),
+os valores possíveis ("Valor = sincronizado", "Valor = pronto") são
+populados como **dropdown com as options reais daquela coluna no Notion**.
+Helper local `_select_options(prop_name)` lê
+`props[prop_name][type]["options"][].name` e devolve a lista.
+`on_change` em `dd_sync_p`/`dd_status_p` chama `_persist_active(); rebuild()`
+para refrescar os dropdowns de valor. Quando o campo é "(nenhum)" ou não
+tem options, cai pra TextField como fallback.
 | `layout_mode` | "wide" \| "narrow" | Modo de layout responsivo |
 
 ---
@@ -591,9 +618,67 @@ Controlado por `AI_PROVIDER` no `.env`.
 | Provider | SDK | Env vars | Modelo padrão |
 |---|---|---|---|
 | `claude` (padrão) | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-5` |
-| `gemini` | `google-genai` | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-2.0-flash` |
+| `gemini` | `google-genai` | `GEMINI_API_KEY`, `GEMINI_MODEL` | `gemini-2.5-flash` |
 
 `SYSTEM_PROMPT` é idêntico para ambos. Retorno esperado: array JSON `[{"front":"...","back":"..."}]`.
+
+### Prompt e configs LLM (`gerar_flashcards`)
+
+`SYSTEM_PROMPT` é baseado nas regras do SuperMemo ("20 rules of formulating
+knowledge"), adaptadas:
+
+1. **Atomicidade** — 1 card = 1 conceito.
+2. **Informação mínima** — pergunta simples, verso curto.
+3. **Active recall** — frente sempre é pergunta/lacuna, nunca afirmação.
+4. **Sem enumerações no verso** — divide em vários cards.
+5. **Contexto mínimo na frente** — só o necessário para desambiguar.
+6. **Prioriza** definições, leis, fórmulas, datas, comparações, exceções.
+7. **Evita** sim/não, perguntas vagas, cópia literal de parágrafos.
+8. **Mesmo idioma** da anotação.
+9. **Nomes próprios** preservados.
+10. **Sem meta-comentários** ("de acordo com a anotação...").
+
+User prompt explicita: matéria, título, data, tamanho, **orçamento**
+(`max_cards`) e a anotação. Mensagem chave: *"é melhor entregar poucos
+cards excelentes do que muitos medianos"*.
+
+#### Configurações por provider
+
+| Parâmetro | Gemini | Claude |
+|---|---|---|
+| `temperature` | `0.3` | `0.3` |
+| `top_p` | `0.9` | (default) |
+| `response_mime_type` | `application/json` | (n/a) |
+| `max_output_tokens` / `max_tokens` | `4096` | `4096` |
+
+Temperature baixa (0.3) → cards mais determinísticos e factuais. Gemini
+recebe `response_mime_type=application/json` quando o SDK aceita (degrada
+com graça em SDKs antigos via try/except `TypeError`).
+
+#### Pós-processamento
+
+`_strip_code_fence(raw)` remove cercas markdown se a IA insistir em
+retornar `\`\`\`json ... \`\`\``. `_validate_and_clean(cards, max_cards)`:
+
+- descarta itens não-dict
+- exige `front` e `back` strings não vazias
+- deduplica por `front` normalizado (lowercase + strip)
+- aplica teto `max_cards` (early return se 0)
+
+#### Comportamento por conteúdo
+
+`MAX_FLASHCARDS_POR_AULA` é o **teto por chamada de `gerar_flashcards`**.
+Como a função é chamada **uma vez por item** (uma aula/dia) dentro do loop
+das pipelines:
+
+```
+matéria 1 → item 1 → gerar_flashcards(..., max_cards=N)  → até N cards
+         → item 2 → gerar_flashcards(..., max_cards=N)  → até N cards
+matéria 2 → item 1 → ...
+```
+
+Sem soma global — cada conteúdo tem seu próprio orçamento. Log mostra
+explicitamente: `→ X/N flashcards gerados` por item.
 
 ---
 

@@ -302,3 +302,78 @@ class TestNotionConfig:
         m.save_notion_config(data)
         raw = cfg_file.read_text(encoding="utf-8")
         assert "✅ Sincronizado" in raw
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Flashcard validation / cleaning
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestStripCodeFence:
+    def test_no_fence_passes_through(self):
+        import notion_anki_sync as m
+        assert m._strip_code_fence('[{"a":1}]') == '[{"a":1}]'
+
+    def test_strips_json_fence(self):
+        import notion_anki_sync as m
+        raw = "```json\n[{\"a\":1}]\n```"
+        assert m._strip_code_fence(raw) == '[{"a":1}]'
+
+    def test_strips_plain_fence(self):
+        import notion_anki_sync as m
+        raw = "```\n[{\"a\":1}]\n```"
+        assert m._strip_code_fence(raw) == '[{"a":1}]'
+
+    def test_strips_outer_whitespace(self):
+        import notion_anki_sync as m
+        assert m._strip_code_fence("   [1,2]   ") == "[1,2]"
+
+
+class TestValidateAndClean:
+    def _m(self):
+        import notion_anki_sync as m
+        return m
+
+    def test_valid_cards_pass(self):
+        cards = [{"front": "Q1", "back": "A1"}, {"front": "Q2", "back": "A2"}]
+        assert self._m()._validate_and_clean(cards, 10) == cards
+
+    def test_drops_missing_back(self):
+        cards = [{"front": "Q", "back": ""}, {"front": "Q2", "back": "A"}]
+        out = self._m()._validate_and_clean(cards, 10)
+        assert len(out) == 1
+        assert out[0]["front"] == "Q2"
+
+    def test_drops_missing_front(self):
+        cards = [{"back": "orphan"}, {"front": "Q", "back": "A"}]
+        out = self._m()._validate_and_clean(cards, 10)
+        assert [c["front"] for c in out] == ["Q"]
+
+    def test_drops_non_dicts(self):
+        cards = ["not a dict", 42, {"front": "Q", "back": "A"}, None]
+        out = self._m()._validate_and_clean(cards, 10)
+        assert out == [{"front": "Q", "back": "A"}]
+
+    def test_dedupes_by_front_case_insensitive(self):
+        cards = [
+            {"front": "What is X?", "back": "A"},
+            {"front": "what is x?", "back": "B"},   # dupe
+            {"front": "Different",  "back": "C"},
+        ]
+        out = self._m()._validate_and_clean(cards, 10)
+        assert len(out) == 2
+        assert [c["back"] for c in out] == ["A", "C"]
+
+    def test_strips_whitespace(self):
+        cards = [{"front": "  Q  ", "back": "  A  "}]
+        out = self._m()._validate_and_clean(cards, 10)
+        assert out == [{"front": "Q", "back": "A"}]
+
+    def test_enforces_max_cap(self):
+        cards = [{"front": f"Q{i}", "back": f"A{i}"} for i in range(20)]
+        out = self._m()._validate_and_clean(cards, 5)
+        assert len(out) == 5
+        assert out[-1]["front"] == "Q4"
+
+    def test_max_zero_returns_empty(self):
+        cards = [{"front": "Q", "back": "A"}]
+        assert self._m()._validate_and_clean(cards, 0) == []
