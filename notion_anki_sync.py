@@ -531,23 +531,20 @@ def processar_hierarquico(cfg: dict) -> dict:
 # (DB único, cada página vira flashcards)
 # ──────────────────────────────────────────────
 
-def processar_plano(cfg: dict) -> dict:
-    """
-    Estrutura: DB único → cada página/item → flashcards diretos
-    """
-    db_id           = cfg["parent_db_id"]
-    title_prop      = cfg["parent_name_prop"]
-    content_prop    = cfg.get("child_content_prop")
-    date_prop       = cfg.get("child_date_prop")
-    use_sync_field  = cfg.get("use_sync_field", True)
-    sync_prop       = cfg.get("child_sync_prop")
-    sync_done       = cfg.get("child_sync_done", "✅ Sincronizado")
-    status_prop     = cfg.get("child_status_prop")
-    status_val      = cfg.get("child_status_complete")
-    anki_deck       = cfg.get("anki_deck_root", "Notion::Sync")
-    last_sync_time  = cfg.get("last_sync_time")
+def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
+    """Processa um único database no modo plano."""
+    title_prop     = cfg["parent_name_prop"]
+    content_prop   = cfg.get("child_content_prop")
+    date_prop      = cfg.get("child_date_prop")
+    use_sync_field = cfg.get("use_sync_field", True)
+    sync_prop      = cfg.get("child_sync_prop")
+    sync_done      = cfg.get("child_sync_done", "✅ Sincronizado")
+    status_prop    = cfg.get("child_status_prop")
+    status_val     = cfg.get("child_status_complete")
+    anki_deck_root = cfg.get("anki_deck_root", "Notion::Sync")
+    last_sync_time = cfg.get("last_sync_time")
 
-    total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
+    deck_name = f"{anki_deck_root}::{db_name}"
 
     filtros = []
     if use_sync_field and sync_prop:
@@ -567,12 +564,12 @@ def processar_plano(cfg: dict) -> dict:
         itens = [i for i in itens if is_newer_than(i, last_sync_time)]
 
     if not itens:
-        log.info("Nenhum item pendente.")
-        return total
+        log.info(f"  → Nenhum item pendente em '{db_name}'.")
+        return
 
-    log.info(f"{len(itens)} item(s) para processar")
-    garantir_deck(anki_deck)
-    total["disciplinas"] = 1
+    log.info(f"  → {len(itens)} item(s) para processar em '{db_name}'")
+    garantir_deck(deck_name)
+    total["disciplinas"] += 1
 
     for item in itens:
         titulo = get_title_value(item, title_prop) or "Sem título"
@@ -594,7 +591,7 @@ def processar_plano(cfg: dict) -> dict:
             continue
 
         total["itens"] += 1
-        cards = gerar_flashcards("", titulo, data, conteudo)
+        cards = gerar_flashcards(db_name, titulo, data, conteudo)
         total["gerados"] += len(cards)
 
         if not cards:
@@ -603,7 +600,7 @@ def processar_plano(cfg: dict) -> dict:
             total["erros"] += 1
             continue
 
-        enviados = sum(adicionar_nota(anki_deck, c, "", titulo, data) for c in cards)
+        enviados = sum(adicionar_nota(deck_name, c, db_name, titulo, data) for c in cards)
         total["enviados"] += enviados
         log.info(f"    ✓ {enviados}/{len(cards)} notas no Anki")
 
@@ -611,6 +608,26 @@ def processar_plano(cfg: dict) -> dict:
             marcar_sincronizado(item["id"], sync_prop, sync_done)
 
         time.sleep(1)
+
+
+def processar_plano(cfg: dict) -> dict:
+    """
+    Modo plano: itera por todos os databases selecionados.
+    Cada database vira um subdeck separado no Anki.
+    """
+    total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
+
+    selected_dbs = cfg.get("selected_dbs")
+    if not selected_dbs:
+        # backwards compat: single DB
+        selected_dbs = [{"id": cfg["parent_db_id"], "name": cfg.get("parent_db_name", "Sync")}]
+
+    log.info(f"Databases selecionados: {len(selected_dbs)}")
+    for entry in selected_dbs:
+        db_id   = entry["id"]
+        db_name = entry["name"]
+        log.info(f"\n{'='*50}\n📋 {db_name}")
+        _processar_db_plano(db_id, db_name, cfg, total)
 
     return total
 

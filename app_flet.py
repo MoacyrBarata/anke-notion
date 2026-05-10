@@ -106,26 +106,95 @@ def check_ai_key(provider: str, key: str):
     return ok, "Formato válido" if ok else "Esperado: AIza..."
 
 
-def list_notion_databases(token: str):
+_NOTION_VERSION = "2022-06-28"
+
+
+def _notion_get(token: str, path: str) -> dict:
+    """Raw Notion REST GET pinned to API version that returns full properties."""
+    r = requests.get(
+        f"https://api.notion.com/v1{path}",
+        headers={"Authorization": f"Bearer {token}",
+                 "Notion-Version": _NOTION_VERSION},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def list_notion_databases(token: str, on_progress=None):
     """Returns (list_of_dbs, error_msg). error_msg is None on success."""
+    def prog(msg):
+        if on_progress:
+            on_progress(msg)
+
     if not NOTION_CLIENT_AVAILABLE:
         return [], "notion-client não instalado"
     if not token:
         return [], "Token não informado"
     try:
         client = NotionClient(auth=token)
-        results, cursor = [], None
+
+        # ── Primary: search API (databases explicitly connected) ──────────────
+        prog("🔍 Buscando tabelas conectadas à integração...")
+        db_map, cursor = {}, None
         while True:
-            kwargs = {"filter": {"property": "object", "value": "database"},
+            kwargs = {"filter": {"property": "object", "value": "data_source"},
                       "page_size": 100}
             if cursor:
                 kwargs["start_cursor"] = cursor
             resp = client.search(**kwargs)
-            results.extend(resp.get("results", []))
+            for db in resp.get("results", []):
+                title = (db.get("title") or [{}])[0].get("plain_text", db["id"][:8])
+                prog(f"📋 Tabela encontrada: {title}")
+                db_map[db["id"]] = db
             if not resp.get("has_more"):
                 break
             cursor = resp.get("next_cursor")
-        return results, None
+
+        # ── Fallback: discover parent databases via accessible pages ──────────
+        # Notion bug: connecting child pages doesn't always index the parent DB
+        # in /search, but direct retrieval still works.
+        prog("📄 Verificando páginas para descobrir tabelas adicionais...")
+        page_cursor, page_count, new_dbs = None, 0, 0
+        while True:
+            kwargs = {"filter": {"property": "object", "value": "page"},
+                      "page_size": 100}
+            if page_cursor:
+                kwargs["start_cursor"] = page_cursor
+            resp = client.search(**kwargs)
+            results = resp.get("results", [])
+            page_count += len(results)
+            if results:
+                prog(f"📄 {page_count} página(s) analisada(s)...")
+            for page in results:
+                p_title = ""
+                try:
+                    p_title = (page.get("properties", {}).get(
+                        next(iter(page.get("properties", {})), ""), {}
+                    ).get("title") or [{}])[0].get("plain_text", "")
+                except Exception:
+                    pass
+                parent = page.get("parent", {})
+                db_id = parent.get("database_id") or parent.get("data_source_id")
+                if parent.get("type") in ("database_id", "data_source_id") and db_id:
+                    if db_id not in db_map:
+                        if p_title:
+                            prog(f"🔎 Encontrado em \"{p_title}\", buscando tabela...")
+                        try:
+                            db = _notion_get(token, f"/databases/{db_id}")
+                            db_title = (db.get("title") or [{}])[0].get("plain_text", db_id[:8])
+                            prog(f"✅ Tabela descoberta: {db_title}")
+                            db_map[db_id] = db
+                            new_dbs += 1
+                        except Exception:
+                            pass
+            if not resp.get("has_more"):
+                break
+            page_cursor = resp.get("next_cursor")
+
+        total = len(db_map)
+        prog(f"✔ Busca concluída — {total} tabela(s) encontrada(s)")
+        return list(db_map.values()), None
     except Exception as exc:
         msg = str(exc)
         if "401" in msg or "unauthorized" in msg.lower():
@@ -136,13 +205,118 @@ def list_notion_databases(token: str):
 
 
 def get_database_properties(token: str, db_id: str) -> dict:
-    if not NOTION_CLIENT_AVAILABLE or not token:
+    if not token or not db_id:
         return {}
     try:
-        client = NotionClient(auth=token)
-        return client.databases.retrieve(db_id).get("properties", {})
+        return _notion_get(token, f"/databases/{db_id}").get("properties", {})
     except Exception:
         return {}
+
+
+def suggest_fields(props: dict) -> dict:
+    """Keyword + type heuristics to pre-fill field dropdowns."""
+    _TITLE_KW   = {"título", "title", "nome", "name", "ideia", "aula", "item", "tópico"}
+    _CONTENT_KW = {"conteúdo", "content", "resumo", "summary", "notas", "notes",
+                   "anotações", "texto", "descrição", "description", "corpo", "body"}
+    _DATE_KW    = {"data", "date", "dia", "quando", "when", "criado", "created"}
+    _SYNC_KW    = {"sync", "sincronizado", "anki", "sincronizar", "exportado"}
+    _STATUS_KW  = {"status", "estado", "pronto", "completo", "done", "situação"}
+
+    def score(name, keywords):
+        n = name.lower()
+        return any(k in n for k in keywords)
+
+    hints = {}
+
+    # Title: type "title" wins unconditionally
+    for name, meta in props.items():
+        if meta.get("type") == "title":
+            hints["title"] = name
+            break
+
+    # Content: rich_text with content keyword, else first rich_text
+    for name, meta in props.items():
+        if meta.get("type") == "rich_text" and score(name, _CONTENT_KW):
+            hints["content"] = name
+            break
+    if "content" not in hints:
+        for name, meta in props.items():
+            if meta.get("type") == "rich_text":
+                hints["content"] = name
+                break
+
+    # Date: date/created_time with date keyword, else first date field
+    for name, meta in props.items():
+        if meta.get("type") in ("date", "created_time", "last_edited_time") and score(name, _DATE_KW):
+            hints["date"] = name
+            break
+    if "date" not in hints:
+        for name, meta in props.items():
+            if meta.get("type") in ("date", "created_time", "last_edited_time"):
+                hints["date"] = name
+                break
+
+    # Sync field
+    for name, meta in props.items():
+        if meta.get("type") in ("select", "status") and score(name, _SYNC_KW):
+            hints["sync"] = name
+            break
+
+    # Status filter (different from sync)
+    for name, meta in props.items():
+        if meta.get("type") in ("select", "status") and score(name, _STATUS_KW):
+            if name != hints.get("sync"):
+                hints["status"] = name
+                break
+
+    return hints
+
+
+def get_sample_page(token: str, db_id: str) -> dict | None:
+    """Fetches one page from the database for preview purposes."""
+    if not token or not db_id:
+        return None
+    try:
+        r = requests.post(
+            f"https://api.notion.com/v1/databases/{db_id}/query",
+            headers={"Authorization": f"Bearer {token}",
+                     "Notion-Version": _NOTION_VERSION},
+            json={"page_size": 1},
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("results", [])
+        return results[0] if results else None
+    except Exception:
+        return None
+
+
+def extract_prop_text(page: dict, prop_name: str) -> str:
+    """Extracts displayable text from any property type in a sample page."""
+    if not page or not prop_name:
+        return ""
+    prop = page.get("properties", {}).get(prop_name, {})
+    ptype = prop.get("type", "")
+    try:
+        if ptype in ("title", "rich_text"):
+            return "".join(r["plain_text"] for r in prop.get(ptype, []))
+        if ptype == "select":
+            return prop["select"]["name"] if prop.get("select") else ""
+        if ptype == "status":
+            return prop["status"]["name"] if prop.get("status") else ""
+        if ptype == "multi_select":
+            return ", ".join(o["name"] for o in prop.get("multi_select", []))
+        if ptype == "date":
+            return prop["date"]["start"] if prop.get("date") else ""
+        if ptype == "created_time":
+            return prop.get("created_time", "")[:10]
+        if ptype == "last_edited_time":
+            return prop.get("last_edited_time", "")[:10]
+        if ptype == "number":
+            return str(prop.get("number", ""))
+    except Exception:
+        pass
+    return ""
 
 
 def get_db_title(db: dict) -> str:
@@ -291,13 +465,25 @@ def dropdown(label, options, value=None):
     val  = value if value in options else (options[0] if options else None)
     return ft.Dropdown(
         label=label, options=opts, value=val,
-        bgcolor=C_GLASS,
+        bgcolor="#1a1a38",
         border_color=C_BORDER,
         focused_border_color=C_ACCENT,
         border_radius=12,
         color=C_TEXT,
         label_style=ft.TextStyle(color=C_DIM, size=12),
+        text_style=ft.TextStyle(color=C_TEXT, size=14),
     )
+
+
+def hint(text):
+    return ft.Container(
+        content=ft.Text(text, size=11, color=C_MUTED, italic=True),
+        padding=ft.padding.only(left=4, top=2, bottom=4),
+    )
+
+
+def field_with_hint(control, hint_text):
+    return ft.Column([control, hint(hint_text)], spacing=0, tight=True)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -366,6 +552,7 @@ def main(page: ft.Page):
         setup_mode="hierarchical",
         setup_parent_db_id=None,
         setup_parent_db_name=None,
+        setup_selected_dbs=[],
         setup_child_props=None,
     )
 
@@ -668,9 +855,15 @@ def main(page: ft.Page):
                             ft.Radio(value="hierarchical", fill_color=C_ACCENT),
                             ft.Column([
                                 ft.Text("🗂  Hierárquico", color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
-                                dim("DB pai → DB filho. Categorias com subcategorias."),
-                            ], spacing=2),
-                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                dim("Você tem duas tabelas: uma com matérias/categorias e outra "
+                                    "com as aulas/conteúdos dentro de cada categoria.", size=12),
+                                ft.Container(height=4),
+                                ft.Text("Exemplo: Tabela \"Disciplinas\" → linhas \"Biologia\", "
+                                        "\"História\" → cada uma linkada a uma tabela de Aulas com "
+                                        "o conteúdo real.",
+                                        color=C_MUTED, size=11, italic=True),
+                            ], spacing=2, expand=True),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
                         bgcolor=C_GLASS, border=_ball(1, C_BORDER),
                         border_radius=12, padding=14, margin=ft.margin.Margin(left=0, right=0, top=0, bottom=8),
                     ),
@@ -679,9 +872,14 @@ def main(page: ft.Page):
                             ft.Radio(value="flat", fill_color=C_ACCENT),
                             ft.Column([
                                 ft.Text("📋  Plano", color=C_TEXT, size=14, weight=ft.FontWeight.W_500),
-                                dim("DB único onde cada linha vira flashcards."),
-                            ], spacing=2),
-                        ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                dim("Você tem uma única tabela onde cada linha é um item "
+                                    "que vira flashcard diretamente.", size=12),
+                                ft.Container(height=4),
+                                ft.Text("Exemplo: Tabela \"Ideias de jogos\" onde cada linha tem "
+                                        "título, descrição e tags — cada linha gera seus flashcards.",
+                                        color=C_MUTED, size=11, italic=True),
+                            ], spacing=2, expand=True),
+                        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START),
                         bgcolor=C_GLASS, border=_ball(1, C_BORDER),
                         border_radius=12, padding=14,
                     ),
@@ -712,7 +910,7 @@ def main(page: ft.Page):
                         ft.Text("Configuração salva", color=C_SUCCESS, size=13, weight=ft.FontWeight.W_600),
                         ft.Container(expand=True),
                         ghost_btn("Reconfigurar", lambda e: (
-                            state.update({"setup_step": 1, "notion_dbs": None, "notion_dbs_err": None}) or rebuild()
+                            state.update({"setup_step": 1, "notion_dbs": None, "notion_dbs_err": None, "notion_search_log": [], "setup_selected_dbs": []}) or rebuild()
                         )),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                        vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
@@ -733,17 +931,38 @@ def main(page: ft.Page):
                     ft.Text("Insira o Notion Token nas Configurações.", color=C_WARNING, size=13),
                 ], spacing=8)))
             elif state["notion_dbs"] is None:
+                if "notion_search_log" not in state:
+                    state["notion_search_log"] = []
+
+                log_col = ft.Column(
+                    controls=[ft.Text(m, size=12, color=C_DIM) for m in state["notion_search_log"]],
+                    spacing=2,
+                )
+
+                def _push_log(msg):
+                    state["notion_search_log"].append(msg)
+                    log_col.controls.append(ft.Text(msg, size=12, color=C_DIM))
+                    page.update()
+
                 def load_dbs():
-                    dbs, err = list_notion_databases(token)
+                    dbs, err = list_notion_databases(token, on_progress=_push_log)
                     state["notion_dbs"]     = dbs
                     state["notion_dbs_err"] = err
+                    state["notion_search_log"] = []
                     rebuild()
                     page.update()
-                threading.Thread(target=load_dbs, daemon=True).start()
-                ctrls.append(glass(ft.Row([
-                    ft.ProgressRing(width=18, height=18, color=C_ACCENT, stroke_width=2),
-                    dim("Buscando databases no Notion..."),
-                ], spacing=12)))
+
+                if not state["notion_search_log"]:
+                    threading.Thread(target=load_dbs, daemon=True).start()
+
+                ctrls.append(glass(ft.Column([
+                    ft.Row([
+                        ft.ProgressRing(width=16, height=16, color=C_ACCENT, stroke_width=2),
+                        dim("Buscando tabelas no Notion..."),
+                    ], spacing=10),
+                    ft.Container(height=6),
+                    log_col,
+                ], spacing=0)))
             else:
                 dbs = state["notion_dbs"]
                 err = state.get("notion_dbs_err")
@@ -765,30 +984,59 @@ def main(page: ft.Page):
                             "database no Notion → ··· → Conexões → selecione sua integração.", size=12),
                     ], spacing=0)))
                 else:
-                    opts   = {get_db_title(d): d["id"] for d in dbs}
-                    labels = list(opts.keys())
-                    db_dd  = dropdown(
-                        "Database" + (" principal" if state["setup_mode"] == "hierarchical" else " de conteúdo"),
-                        labels,
-                    )
-
                     def back2(e):
                         state["setup_step"] = 1; rebuild()
 
-                    def next2(e):
-                        if db_dd.value:
-                            state["setup_parent_db_id"]   = opts[db_dd.value]
-                            state["setup_parent_db_name"] = db_dd.value
-                            state["setup_step"] = 3; rebuild()
+                    if state["setup_mode"] == "hierarchical":
+                        opts  = {get_db_title(d): d["id"] for d in dbs}
+                        db_dd = dropdown("Database principal", list(opts.keys()))
 
-                    ctrls.append(glass(ft.Column([
-                        h("Passo 2 — Database principal", size=15),
-                        ft.Container(height=12),
-                        db_dd,
-                        ft.Container(height=16),
-                        ft.Row([ghost_btn("← Voltar", back2), btn("Próximo →", next2)],
-                               alignment=ft.MainAxisAlignment.END, spacing=10),
-                    ], spacing=0)))
+                        def next2(e):
+                            if db_dd.value:
+                                state["setup_parent_db_id"]   = opts[db_dd.value]
+                                state["setup_parent_db_name"] = db_dd.value
+                                state["setup_selected_dbs"]   = [{"id": opts[db_dd.value], "name": db_dd.value}]
+                                state["setup_step"] = 3; rebuild()
+
+                        ctrls.append(glass(ft.Column([
+                            h("Passo 2 — Database principal", size=15),
+                            hint("Selecione a tabela que contém as categorias/disciplinas."),
+                            ft.Container(height=12),
+                            db_dd,
+                            ft.Container(height=16),
+                            ft.Row([ghost_btn("← Voltar", back2), btn("Próximo →", next2)],
+                                   alignment=ft.MainAxisAlignment.END, spacing=10),
+                        ], spacing=0)))
+
+                    else:
+                        # Flat mode — multi-select checkboxes, one per DB found
+                        db_checks = [
+                            (get_db_title(d), d["id"],
+                             ft.Checkbox(value=True, fill_color=C_ACCENT, check_color=C_TEXT,
+                                         label=get_db_title(d),
+                                         label_style=ft.TextStyle(color=C_TEXT, size=13)))
+                            for d in dbs
+                        ]
+
+                        def next2_flat(e):
+                            selected = [{"id": did, "name": name}
+                                        for name, did, cb in db_checks if cb.value]
+                            if selected:
+                                state["setup_selected_dbs"]   = selected
+                                state["setup_parent_db_id"]   = selected[0]["id"]
+                                state["setup_parent_db_name"] = selected[0]["name"]
+                                state["setup_step"] = 3; rebuild()
+
+                        ctrls.append(glass(ft.Column([
+                            h("Passo 2 — Selecionar tabelas", size=15),
+                            dim("Selecione todas as tabelas que contêm linhas a sincronizar. "
+                                "Cada tabela selecionada vira um deck separado no Anki.", size=12),
+                            ft.Container(height=12),
+                            ft.Column([cb for _, _, cb in db_checks], spacing=8),
+                            ft.Container(height=16),
+                            ft.Row([ghost_btn("← Voltar", back2), btn("Próximo →", next2_flat)],
+                                   alignment=ft.MainAxisAlignment.END, spacing=10),
+                        ], spacing=0)))
 
         # ── Step 3 ────────────────────────────────────────────────────────────
         elif step == 3:
@@ -796,6 +1044,7 @@ def main(page: ft.Page):
             db_name = state["setup_parent_db_name"]
             mode    = state["setup_mode"]
             props   = get_database_properties(token, db_id)
+            sample  = get_sample_page(token, db_id)
 
             if not props:
                 ctrls.append(glass(ft.Row([
@@ -803,23 +1052,91 @@ def main(page: ft.Page):
                     ft.Text("Não foi possível buscar propriedades. Verifique o token.", color=C_ERROR, size=13),
                 ], spacing=8)))
             else:
+                hints   = suggest_fields(props)
                 t_opts  = props_by_type(props, "title") or list(props.keys())
                 tx_opts = ["(nenhum)"] + props_by_type(props, "rich_text")
                 d_opts  = ["(nenhum)"] + props_by_type(props, "date", "created_time", "last_edited_time")
                 s_opts  = ["(nenhum)"] + props_by_type(props, "select", "status")
                 tx_all  = ["(nenhum)"] + props_by_type(props, "rich_text", "title")
 
-                dd_title    = dropdown("Campo título", t_opts)
-                dd_content  = dropdown("Campo conteúdo (texto/resumo)", tx_opts)
-                dd_date     = dropdown("Campo data (opcional)", d_opts)
-                dd_sync_p   = dropdown("Campo sync (opcional)", s_opts)
-                dd_status_p = dropdown("Campo status (filtro, opcional)", s_opts)
+                dd_title    = dropdown("Campo título", t_opts,   hints.get("title"))
+                dd_content  = dropdown("Campo conteúdo (texto/resumo)", tx_opts, hints.get("content"))
+                dd_date     = dropdown("Campo data (opcional)", d_opts,  hints.get("date"))
+                dd_sync_p   = dropdown("Campo sync (opcional)", s_opts,  hints.get("sync"))
+                dd_status_p = dropdown("Campo status (filtro, opcional)", s_opts, hints.get("status"))
                 dd_child_t  = dropdown("Campo título do item filho", tx_all) if mode == "hierarchical" else None
                 f_kw        = field("Palavra-chave do DB filho", "Aulas") if mode == "hierarchical" else None
                 f_sync_done = field("Valor = sincronizado", "✅ Sincronizado")
                 f_status_v  = field("Valor = pronto", "✅ Completa")
+
+                w_title   = field_with_hint(dd_title,
+                    "Coluna que dá nome ao item — vira o título do flashcard.")
+                w_content = field_with_hint(dd_content,
+                    "Coluna com o texto/resumo principal — usado para gerar as perguntas e respostas.")
+                w_date    = field_with_hint(dd_date,
+                    "Filtra itens a partir de uma data. Deixe em (nenhum) para processar tudo.")
+                w_sync_p  = field_with_hint(dd_sync_p,
+                    "Coluna onde o app marca o item como já sincronizado, evitando duplicatas no Anki.")
+                w_sync_v  = field_with_hint(f_sync_done,
+                    "Valor que será gravado nessa coluna quando o item for sincronizado.")
+                w_status_p = field_with_hint(dd_status_p,
+                    "Filtra: só processa linhas cujo status seja o valor abaixo. Útil para ignorar rascunhos.")
+                w_status_v = field_with_hint(f_status_v,
+                    "Valor da coluna de status que indica 'pronto para sincronizar'.")
+                w_child_t = field_with_hint(dd_child_t,
+                    "No DB filho, qual coluna tem o título de cada aula/item.") if dd_child_t else None
+                w_kw      = field_with_hint(f_kw,
+                    "Palavra que identifica o DB filho linkado. Ex: se a relação se chama 'Aulas', use Aulas.") if f_kw else None
                 use_sync    = ft.Switch(value=True, active_color=C_ACCENT, label="Usar campo de sync no Notion",
-                                        label_style=ft.TextStyle(color=C_DIM, size=13))
+                                        label_text_style=ft.TextStyle(color=C_DIM, size=13))
+
+                # ── Preview card ─────────────────────────────────────────────
+                sel_dbs   = state.get("setup_selected_dbs") or [{"name": db_name}]
+                deck_root_preview = "Deck raiz"
+                decks_preview = " · ".join(
+                    f"{deck_root_preview}::{d['name']}" for d in sel_dbs[:3]
+                ) + (" ..." if len(sel_dbs) > 3 else "")
+
+                s_title   = extract_prop_text(sample, hints.get("title", ""))   or "Aula dia 27"
+                s_content = extract_prop_text(sample, hints.get("content", "")) or "(conteúdo da coluna selecionada)"
+                s_date    = extract_prop_text(sample, hints.get("date", ""))    or ""
+
+                content_preview = (s_content[:90] + "…") if len(s_content) > 90 else s_content
+
+                preview_card = glass(ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.PREVIEW_ROUNDED, color=C_ACCENT, size=14),
+                        ft.Text("Prévia — como ficará cada item", color=C_ACCENT,
+                                size=12, weight=ft.FontWeight.W_600),
+                        ft.Text("✨ campos sugeridos automaticamente", color=C_MUTED,
+                                size=10, italic=True),
+                    ], spacing=6),
+                    ft.Container(height=8),
+                    ft.Row([
+                        ft.Text("📚 Deck:", color=C_MUTED, size=11, width=80),
+                        ft.Text(decks_preview, color=C_DIM, size=11),
+                    ], spacing=4),
+                    ft.Row([
+                        ft.Text("📄 Título:", color=C_MUTED, size=11, width=80),
+                        ft.Text(s_title, color=C_TEXT, size=12, weight=ft.FontWeight.W_500),
+                    ], spacing=4),
+                    *([ ft.Row([
+                        ft.Text("📅 Data:", color=C_MUTED, size=11, width=80),
+                        ft.Text(s_date, color=C_DIM, size=11),
+                    ], spacing=4) ] if s_date else []),
+                    ft.Row([
+                        ft.Text("📝 Conteúdo:", color=C_MUTED, size=11, width=80),
+                        ft.Text(content_preview, color=C_DIM, size=11, expand=True),
+                    ], spacing=4),
+                    ft.Container(height=4),
+                    ft.Row([
+                        ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, color=C_SUCCESS, size=12),
+                        ft.Text(f"IA gerará até {load_cfg().get('MAX_FLASHCARDS_POR_AULA', '10')} flashcards por item",
+                                color=C_SUCCESS, size=11),
+                    ], spacing=4),
+                ], spacing=6),
+                    padding=14, bgcolor="#12122a"
+                )
 
                 def back3(e):
                     state["setup_step"] = 2; rebuild()
@@ -841,27 +1158,31 @@ def main(page: ft.Page):
 
                 hier_extras = ([
                     ft.Divider(color=C_BORDER, height=1),
-                    dim("Database filho:", size=11, color=C_DIM),
-                    f_kw, dd_child_t,
+                    dim("🔗  Database filho", size=12, color=C_DIM),
+                    w_kw, w_child_t,
                 ] if mode == "hierarchical" else [])
 
+                ctrls.append(preview_card)
+                ctrls.append(ft.Container(height=10))
                 ctrls.append(glass(ft.Column([
-                    h(f"Passo 3 — Campos: {db_name}", size=15),
+                    h(f"Passo 3 — Mapeamento de campos: {db_name}", size=15),
+                    dim("Confira os campos sugeridos abaixo e ajuste se necessário.", size=12),
                     ft.Container(height=10),
-                    dd_title,
+                    dim("📌  Identificação", size=12, color=C_DIM),
+                    w_title,
                     *hier_extras,
                     ft.Divider(color=C_BORDER, height=1),
-                    dim("Conteúdo:", size=11, color=C_DIM),
-                    dd_content, dd_date,
+                    dim("📝  Conteúdo para gerar flashcards", size=12, color=C_DIM),
+                    w_content, w_date,
                     ft.Divider(color=C_BORDER, height=1),
-                    dim("Controle de sync:", size=11, color=C_DIM),
+                    dim("🔄  Controle de sincronização", size=12, color=C_DIM),
                     use_sync,
-                    dd_sync_p, f_sync_done,
-                    dd_status_p, f_status_v,
+                    w_sync_p, w_sync_v,
+                    w_status_p, w_status_v,
                     ft.Container(height=8),
                     ft.Row([ghost_btn("← Voltar", back3), btn("Próximo →", next3)],
                            alignment=ft.MainAxisAlignment.END, spacing=10),
-                ], spacing=10)))
+                ], spacing=8)))
 
         # ── Step 4 ────────────────────────────────────────────────────────────
         elif step == 4:
@@ -871,9 +1192,11 @@ def main(page: ft.Page):
             p    = state.get("setup_child_props") or {}
             mode = state["setup_mode"]
 
+            sel_dbs = state.get("setup_selected_dbs") or [{"name": state.get("setup_parent_db_name", "")}]
+            dbs_label = ", ".join(d["name"] for d in sel_dbs) if sel_dbs else ""
             summary = [
                 ("Modo",           "Hierárquico" if mode == "hierarchical" else "Plano"),
-                ("DB principal",   state.get("setup_parent_db_name", "")),
+                ("Tabela(s)",      dbs_label),
                 ("Campo título",   p.get("parent_title_prop", "")),
                 ("Conteúdo",       p.get("content_prop") or "(blocos da página)"),
                 ("Controle sync",  "campo Notion" if p.get("use_sync") else "timestamp"),
@@ -896,6 +1219,7 @@ def main(page: ft.Page):
                     "mode":                  state["setup_mode"],
                     "parent_db_id":          state["setup_parent_db_id"],
                     "parent_db_name":        state["setup_parent_db_name"],
+                    "selected_dbs":          state.get("setup_selected_dbs", []),
                     "parent_name_prop":      p.get("parent_title_prop", ""),
                     "child_db_keyword":      p.get("child_keyword", ""),
                     "child_title_prop":      p.get("child_title", ""),
@@ -909,9 +1233,11 @@ def main(page: ft.Page):
                     "anki_deck_root":        f_deck.value or "Notion::Sync",
                     "last_sync_time":        ex.get("last_sync_time") if ex else None,
                 })
-                state["setup_step"]     = 1
-                state["notion_dbs"]     = None
-                state["notion_dbs_err"] = None
+                state["setup_step"]        = 1
+                state["notion_dbs"]        = None
+                state["notion_dbs_err"]    = None
+                state["notion_search_log"] = []
+                state["setup_selected_dbs"] = []
                 snack("✅ Configuração salva! Vá para Sincronizar.")
                 rebuild()
 
@@ -1158,4 +1484,5 @@ def main(page: ft.Page):
     page.update()
 
 
-ft.run(main)
+if __name__ == "__main__":
+    ft.run(main)

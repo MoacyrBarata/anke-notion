@@ -367,12 +367,12 @@ def test_get_database_properties_empty_without_token(monkeypatch):
 
 
 def test_get_database_properties_returns_props(monkeypatch):
-    monkeypatch.setattr(app_flet, "NOTION_CLIENT_AVAILABLE", True)
-    fake_client = MagicMock()
-    fake_client.databases.retrieve.return_value = {
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
         "properties": {"Name": {"type": "title"}, "Due": {"type": "date"}}
     }
-    monkeypatch.setattr("app_flet.NotionClient", lambda **kw: fake_client)
+    fake_resp.raise_for_status = MagicMock()
+    monkeypatch.setattr("app_flet.requests.get", lambda *a, **kw: fake_resp)
     result = app_flet.get_database_properties("secret_tok", "db_id_123")
     assert "Name" in result
     assert "Due" in result
