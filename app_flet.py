@@ -1498,8 +1498,18 @@ def main(page: ft.Page):
 
         dd_title    = dropdown("Campo título",
             t_opts, _v("parent_name_prop", "title"))
+
+        # Content default: prefer the suggested rich_text column ONLY if the
+        # sample page actually has text in it. New Notion pattern: cells
+        # are empty and content lives in page blocks — default to (nenhum)
+        # so the pipeline reads directly from the page.
+        _content_hint_prop = hints.get("content")
+        _content_sample_text = extract_prop_text(sample, _content_hint_prop) if _content_hint_prop else ""
+        _content_default = saved.get("child_content_prop")
+        if not _content_default:
+            _content_default = _content_hint_prop if _content_sample_text.strip() else "(nenhum)"
         dd_content  = dropdown("Campo conteúdo (texto/resumo)",
-            tx_opts, _v("child_content_prop", "content"))
+            tx_opts, _content_default)
         dd_date     = dropdown("Campo data (opcional)",
             d_opts, _v("child_date_prop", "date"))
         dd_child_t  = dropdown("Campo título do item filho",
@@ -1774,10 +1784,15 @@ def main(page: ft.Page):
         ctrls.append(_explained_field(
             ft.Icons.NOTES_ROUNDED, "Coluna de conteúdo", dd_content,
             "MATÉRIA-PRIMA",
-            "Coluna com o texto que a IA usará para gerar perguntas e "
-            "respostas. Quanto mais detalhada a anotação, melhor o flashcard. "
-            "Deixe em (nenhum) se preferir extrair só dos blocos da página.",
-            "Ex: 'Conteúdo', 'Resumo', 'Anotações'."
+            "Define DE ONDE a IA puxa o texto de cada linha:\n"
+            "• (nenhum) → app lê a PÁGINA INTEIRA apontada pela linha "
+            "(títulos, parágrafos, listas, tabelas, to-dos, etc.). "
+            "Use quando o conteúdo está dentro da página, não numa célula.\n"
+            "• <coluna rich_text> → app lê SÓ aquela célula. "
+            "Use quando a célula contém o resumo pronto.\n"
+            "Se preencher ambos (coluna + página tiver conteúdo), o app "
+            "concatena os dois.",
+            "Ex: 'Conteúdo', 'Resumo', 'Anotações' — ou (nenhum) para usar a página."
         ))
         ctrls.append(_explained_field(
             ft.Icons.CALENDAR_TODAY_ROUNDED, "Coluna de data (opcional)", dd_date,

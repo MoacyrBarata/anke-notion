@@ -207,41 +207,113 @@ def get_rich_text_value(page: dict, prop_name: str) -> str:
         return ""
 
 
+def _list_all_block_children(block_id: str) -> list[dict]:
+    """Paginate notion.blocks.children.list — default page size is 100."""
+    results = []
+    cursor = None
+    while True:
+        kwargs = {"block_id": block_id}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = notion.blocks.children.list(**kwargs)
+        results.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+        if not cursor:
+            break
+    return results
+
+
+def _rich(bloco: dict, tipo: str) -> str:
+    rich = (bloco.get(tipo) or {}).get("rich_text", [])
+    return "".join(r.get("plain_text", "") for r in rich)
+
+
 def extrair_texto_blocos(blocos: list, nivel: int = 0) -> str:
     linhas = []
     indent = "  " * nivel
     for bloco in blocos:
         tipo  = bloco["type"]
         texto = ""
+        recurse_children = True
+
         if tipo in ("paragraph", "bulleted_list_item", "numbered_list_item",
                     "toggle", "quote", "callout"):
-            rich  = bloco[tipo].get("rich_text", [])
-            texto = "".join(r["plain_text"] for r in rich)
-        elif tipo in ("heading_1", "heading_2", "heading_3"):
-            rich  = bloco[tipo].get("rich_text", [])
-            texto = "## " + "".join(r["plain_text"] for r in rich)
+            texto = _rich(bloco, tipo)
+        elif tipo == "heading_1":
+            texto = "# " + _rich(bloco, tipo)
+        elif tipo == "heading_2":
+            texto = "## " + _rich(bloco, tipo)
+        elif tipo == "heading_3":
+            texto = "### " + _rich(bloco, tipo)
         elif tipo == "code":
-            rich  = bloco["code"].get("rich_text", [])
-            texto = "```\n" + "".join(r["plain_text"] for r in rich) + "\n```"
+            lang = (bloco.get("code") or {}).get("language", "") or ""
+            texto = f"```{lang}\n" + _rich(bloco, "code") + "\n```"
         elif tipo == "divider":
             texto = "---"
+        elif tipo == "to_do":
+            checked = "[x]" if (bloco.get("to_do") or {}).get("checked") else "[ ]"
+            texto = f"{checked} " + _rich(bloco, "to_do")
+        elif tipo == "child_page":
+            title = (bloco.get("child_page") or {}).get("title", "")
+            if title:
+                texto = "## " + title
+        elif tipo == "child_database":
+            title = (bloco.get("child_database") or {}).get("title", "")
+            if title:
+                texto = f"[Tabela: {title}]"
+        elif tipo == "equation":
+            expr = (bloco.get("equation") or {}).get("expression", "")
+            if expr:
+                texto = f"$$ {expr} $$"
+        elif tipo == "bookmark":
+            url = (bloco.get("bookmark") or {}).get("url", "")
+            cap = "".join(r.get("plain_text", "")
+                          for r in (bloco.get("bookmark") or {}).get("caption", []))
+            if cap and url:
+                texto = f"[{cap}]({url})"
+            elif url:
+                texto = url
+        elif tipo in ("image", "video", "file", "pdf", "audio"):
+            cap = "".join(r.get("plain_text", "")
+                          for r in (bloco.get(tipo) or {}).get("caption", []))
+            if cap:
+                texto = f"[{tipo}: {cap}]"
+        elif tipo == "table_row":
+            cells = (bloco.get("table_row") or {}).get("cells", [])
+            row = " | ".join(
+                "".join(r.get("plain_text", "") for r in (cell or []))
+                for cell in cells
+            )
+            if row.strip():
+                texto = "| " + row + " |"
+            recurse_children = False  # table_row has no further children
+        elif tipo in ("table", "column_list", "column", "synced_block"):
+            pass  # render through children only
+
         if texto.strip():
             linhas.append(f"{indent}{texto}")
-        if bloco.get("has_children"):
+        if recurse_children and bloco.get("has_children"):
             try:
-                filhos = notion.blocks.children.list(block_id=bloco["id"])
-                linhas.append(extrair_texto_blocos(filhos["results"], nivel + 1))
+                filhos = _list_all_block_children(bloco["id"])
+                child_text = extrair_texto_blocos(filhos, nivel + 1)
+                if child_text.strip():
+                    linhas.append(child_text)
             except Exception:
                 pass
     return "\n".join(linhas)
 
 
 def get_page_content(page_id: str) -> str:
-    """Extrai conteúdo textual de blocos internos de uma página."""
+    """Extrai conteúdo textual de blocos internos de uma página.
+
+    Pagina blocks.children.list para cobrir páginas longas (>100 blocos)
+    e descende recursivamente em blocos com filhos.
+    """
     try:
-        blocos = notion.blocks.children.list(block_id=page_id)
-        texto  = extrair_texto_blocos(blocos["results"])
-        return texto.strip()
+        blocos = _list_all_block_children(page_id)
+        return extrair_texto_blocos(blocos).strip()
     except Exception as e:
         log.warning(f"Erro ao ler blocos de {page_id}: {e}")
         return ""
