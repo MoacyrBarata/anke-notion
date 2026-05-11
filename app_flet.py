@@ -8,7 +8,6 @@ import os
 import sys
 import json
 import time
-import threading
 import subprocess
 import requests
 import flet as ft
@@ -22,13 +21,13 @@ except ImportError:
     NotionClient = None
     NOTION_CLIENT_AVAILABLE = False
 
-from ui_components import (
-    C_BG, C_GLASS, C_GLASS_HVR, C_BORDER,
+from ui_components import (  # noqa: F401  (badge re-exported for tests)
+    C_BG, C_GLASS, C_BORDER,
     C_ACCENT, C_ACCENT2, C_SUCCESS, C_WARNING, C_ERROR,
     C_TEXT, C_DIM, C_MUTED,
     _ball, _bonly,
     glass, h, dim, badge, btn, ghost_btn,
-    field, dropdown, hint, field_with_hint,
+    field, dropdown, hint,
 )
 
 import db as sync_db
@@ -316,6 +315,34 @@ def get_sample_page(token: str, db_id: str) -> dict | None:
         return results[0] if results else None
     except Exception:
         return None
+
+
+def parse_max_cards(raw) -> int | None:
+    """Parse the per-table 'max flashcards' field. Empty / 0 / non-int → None
+    (caller falls back to the global MAX_FLASHCARDS_POR_AULA)."""
+    try:
+        v = int(str(raw or "").strip())
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def default_content_dropdown_value(saved_value, hint_prop, sample_page) -> str:
+    """Pick the initial value for the 'Coluna de conteúdo' dropdown.
+
+    Priority:
+    1. Previously saved choice (if any).
+    2. The suggested rich_text column, ONLY when the sample page has text
+       in it — otherwise the user's pattern is 'content lives in page
+       blocks' and we default to '(nenhum)'.
+    """
+    if saved_value:
+        return saved_value
+    if hint_prop:
+        sample_text = extract_prop_text(sample_page, hint_prop)
+        if sample_text.strip():
+            return hint_prop
+    return "(nenhum)"
 
 
 def extract_prop_text(page: dict, prop_name: str) -> str:
@@ -1500,14 +1527,11 @@ def main(page: ft.Page):
             t_opts, _v("parent_name_prop", "title"))
 
         # Content default: prefer the suggested rich_text column ONLY if the
-        # sample page actually has text in it. New Notion pattern: cells
-        # are empty and content lives in page blocks — default to (nenhum)
-        # so the pipeline reads directly from the page.
-        _content_hint_prop = hints.get("content")
-        _content_sample_text = extract_prop_text(sample, _content_hint_prop) if _content_hint_prop else ""
-        _content_default = saved.get("child_content_prop")
-        if not _content_default:
-            _content_default = _content_hint_prop if _content_sample_text.strip() else "(nenhum)"
+        # sample page actually has text in it. New Notion pattern: cells are
+        # empty and content lives in page blocks — default to (nenhum) so the
+        # pipeline reads directly from the page.
+        _content_default = default_content_dropdown_value(
+            saved.get("child_content_prop"), hints.get("content"), sample)
         dd_content  = dropdown("Campo conteúdo (texto/resumo)",
             tx_opts, _content_default)
         dd_date     = dropdown("Campo data (opcional)",
@@ -1589,6 +1613,14 @@ def main(page: ft.Page):
             label_text_style=ft.TextStyle(color=C_DIM, size=13),
         )
 
+        _global_max = int(load_cfg().get("MAX_FLASHCARDS_POR_AULA", "10") or 10)
+        _max_default = saved.get("max_cards") or _global_max
+        f_max_cards = field(
+            f"Máximo de flashcards por item (global: {_global_max})",
+            value=str(_max_default),
+            hint=f"Deixe em branco para usar o global ({_global_max}).",
+        )
+
         # ── Preview card ───────────────────────────────────────────────────────
         deck_root_preview = "Deck raiz"
         decks_preview = " · ".join(
@@ -1646,6 +1678,7 @@ def main(page: ft.Page):
                 "child_sync_done":       f_sync_done.value or "✅ Sincronizado",
                 "child_status_prop":     None if dd_status_p.value == "(nenhum)" else dd_status_p.value,
                 "child_status_complete": f_status_v.value or None,
+                "max_cards":             parse_max_cards(f_max_cards.value),
             }
 
         def _persist_active():
@@ -1685,6 +1718,7 @@ def main(page: ft.Page):
                 "sync_done":         active_props["child_sync_done"],
                 "status_prop":       active_props["child_status_prop"],
                 "status_val":        active_props["child_status_complete"],
+                "max_cards":         active_props.get("max_cards"),
             }
             state["setup_step"] = 4; rebuild()
 
@@ -1859,6 +1893,15 @@ def main(page: ft.Page):
             _status_value_hint,
             None
         ))
+        ctrls.append(_explained_field(
+            ft.Icons.STYLE_ROUNDED,
+            "Máx. flashcards por item", f_max_cards,
+            "ORÇAMENTO",
+            "Teto de cards que a IA pode gerar para cada linha desta tabela. "
+            f"Sobrescreve o global ({_global_max}). Útil para matérias densas "
+            "(mais cards) ou tabelas de datas-chave (menos cards).",
+            "Deixe vazio (ou 0) para herdar o global."
+        ))
 
         ctrls.append(ft.Container(height=8))
         ctrls.append(ft.Row([
@@ -1876,12 +1919,17 @@ def main(page: ft.Page):
 
         sel_dbs   = state.get("setup_selected_dbs") or [{"name": state.get("setup_parent_db_name", "")}]
         dbs_label = ", ".join(d["name"] for d in sel_dbs) if sel_dbs else ""
+        _global_max = int(load_cfg().get("MAX_FLASHCARDS_POR_AULA", "10") or 10)
+        _max_summary = p.get("max_cards")
+        _max_label = (f"{_max_summary} (sobrescreve)" if _max_summary
+                      else f"{_global_max} (global)")
         summary = [
             ("Modo",           "Hierárquico" if mode == "hierarchical" else "Plano"),
             ("Tabela(s)",      dbs_label),
             ("Campo título",   p.get("parent_title_prop", "")),
             ("Conteúdo",       p.get("content_prop") or "(blocos da página)"),
             ("Controle sync",  "campo Notion" if p.get("use_sync") else "timestamp"),
+            ("Máx. cards",     _max_label),
         ]
         summary_col = ft.Column([
             ft.Row([
@@ -1918,6 +1966,7 @@ def main(page: ft.Page):
                 "child_sync_done":       p.get("sync_done", "✅ Sincronizado"),
                 "child_status_prop":     p.get("status_prop"),
                 "child_status_complete": p.get("status_val"),
+                "max_cards":             p.get("max_cards"),
                 "anki_deck_root":        f_deck.value or "Notion::Sync",
                 "last_sync_time":        ex.get("last_sync_time") if ex else None,
             })

@@ -19,11 +19,18 @@ from typing import Iterable, Iterator
 ROOT    = Path(__file__).parent
 DB_FILE = ROOT / "sync_history.db"
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS page_block_cache (
+    page_id              TEXT PRIMARY KEY,
+    page_last_edited_at  TEXT NOT NULL,
+    content              TEXT NOT NULL,
+    cached_at            TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -109,7 +116,10 @@ def init_db() -> None:
             c.execute("INSERT INTO schema_version(version) VALUES (?);",
                       (SCHEMA_VERSION,))
             return
-        # Future: if row['version'] < SCHEMA_VERSION → migrate.
+        current = int(row["version"])
+        if current < SCHEMA_VERSION:
+            c.execute("UPDATE schema_version SET version = ?;",
+                      (SCHEMA_VERSION,))
 
 
 # ── Run lifecycle ─────────────────────────────────────────────────────────────
@@ -309,6 +319,59 @@ def get_stats(days: int = 30) -> dict:
             "cards":     int(agg["cards"] or 0),
             "runs":      int(runs["n"] or 0),
         }
+
+
+# ── Page block content cache ──────────────────────────────────────────────────
+
+def get_cached_page_content(page_id: str,
+                            page_last_edited_at: str | None) -> str | None:
+    """Returns cached page-block text if the cached `last_edited_time`
+    matches the current one; otherwise None.
+
+    Caller passes the live `last_edited_time` from Notion — when the page is
+    edited, the timestamps diverge and we return None so the caller refetches.
+    """
+    if not page_id or not page_last_edited_at:
+        return None
+    with _conn() as c:
+        row = c.execute(
+            "SELECT content, page_last_edited_at FROM page_block_cache "
+            "WHERE page_id = ?;",
+            (page_id,),
+        ).fetchone()
+    if not row:
+        return None
+    if row["page_last_edited_at"] != page_last_edited_at:
+        return None
+    return row["content"]
+
+
+def set_cached_page_content(page_id: str,
+                            page_last_edited_at: str,
+                            content: str) -> None:
+    if not page_id or not page_last_edited_at:
+        return
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO page_block_cache(page_id, page_last_edited_at, "
+            "content, cached_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(page_id) DO UPDATE SET "
+            "page_last_edited_at = excluded.page_last_edited_at, "
+            "content = excluded.content, "
+            "cached_at = excluded.cached_at;",
+            (page_id, page_last_edited_at, content, _now_iso()),
+        )
+
+
+def clear_page_cache(page_id: str | None = None) -> int:
+    """Wipes block-content cache. Scoped to a page if `page_id` is given."""
+    with _conn() as c:
+        if page_id:
+            cur = c.execute("DELETE FROM page_block_cache WHERE page_id = ?;",
+                            (page_id,))
+        else:
+            cur = c.execute("DELETE FROM page_block_cache;")
+        return cur.rowcount
 
 
 def filter_pending(pages: Iterable[dict]) -> list[dict]:

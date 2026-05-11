@@ -263,3 +263,57 @@ class TestFilterPending:
     def test_keeps_pages_without_id(self, fresh_db):
         pages = [{"foo": "bar"}]
         assert len(db.filter_pending(pages)) == 1
+
+
+# ── Page block cache ─────────────────────────────────────────────────────────
+
+class TestPageBlockCache:
+    def test_miss_returns_none(self, fresh_db):
+        assert db.get_cached_page_content("p1", "2026-01-01T00:00:00Z") is None
+
+    def test_roundtrip(self, fresh_db):
+        db.set_cached_page_content("p1", "2026-01-01T00:00:00Z", "hello world")
+        assert (db.get_cached_page_content("p1", "2026-01-01T00:00:00Z")
+                == "hello world")
+
+    def test_stale_when_last_edited_changes(self, fresh_db):
+        db.set_cached_page_content("p1", "2026-01-01T00:00:00Z", "old")
+        # Page edited → timestamp differs → cache is invalidated.
+        assert db.get_cached_page_content("p1", "2026-05-01T00:00:00Z") is None
+
+    def test_upsert_overwrites(self, fresh_db):
+        db.set_cached_page_content("p1", "2026-01-01T00:00:00Z", "v1")
+        db.set_cached_page_content("p1", "2026-02-02T00:00:00Z", "v2")
+        assert db.get_cached_page_content("p1", "2026-02-02T00:00:00Z") == "v2"
+        # Only one row per page_id (primary key).
+        with db.get_conn() as c:
+            n = c.execute("SELECT COUNT(*) AS n FROM page_block_cache").fetchone()["n"]
+        assert n == 1
+
+    def test_missing_page_or_timestamp_returns_none(self, fresh_db):
+        assert db.get_cached_page_content("", "2026-01-01T00:00:00Z") is None
+        assert db.get_cached_page_content("p1", None) is None
+
+    def test_set_with_missing_args_is_noop(self, fresh_db):
+        db.set_cached_page_content("", "2026-01-01T00:00:00Z", "x")
+        db.set_cached_page_content("p1", "", "x")
+        with db.get_conn() as c:
+            n = c.execute("SELECT COUNT(*) AS n FROM page_block_cache").fetchone()["n"]
+        assert n == 0
+
+    def test_clear_specific_page(self, fresh_db):
+        db.set_cached_page_content("p1", "t1", "a")
+        db.set_cached_page_content("p2", "t2", "b")
+        removed = db.clear_page_cache("p1")
+        assert removed == 1
+        assert db.get_cached_page_content("p1", "t1") is None
+        assert db.get_cached_page_content("p2", "t2") == "b"
+
+    def test_clear_all(self, fresh_db):
+        db.set_cached_page_content("p1", "t1", "a")
+        db.set_cached_page_content("p2", "t2", "b")
+        removed = db.clear_page_cache()
+        assert removed == 2
+        with db.get_conn() as c:
+            n = c.execute("SELECT COUNT(*) AS n FROM page_block_cache").fetchone()["n"]
+        assert n == 0

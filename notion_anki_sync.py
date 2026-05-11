@@ -87,6 +87,11 @@ ANKI_HOST         = os.getenv("ANKI_HOST", "http://localhost:8765")
 
 MAX_FLASHCARDS_POR_AULA = int(os.getenv("MAX_FLASHCARDS_POR_AULA", "10"))
 
+# Retry / robustness knobs (overridable via .env)
+NOTION_MAX_RETRIES      = int(os.getenv("NOTION_MAX_RETRIES", "4"))
+NOTION_RETRY_BASE_DELAY = float(os.getenv("NOTION_RETRY_BASE_DELAY", "0.5"))
+MAX_BLOCK_DEPTH         = int(os.getenv("MAX_BLOCK_DEPTH", "8"))
+
 
 # ──────────────────────────────────────────────
 # Config Notion (notion_config.json)
@@ -148,14 +153,15 @@ def query_database_all(db_id: str, filter_obj: dict | None = None) -> list[dict]
         if filter_obj:
             kwargs["filter"] = filter_obj
         try:
-            resp = notion.data_sources.query(data_source_id=target_id, **kwargs)
+            resp = _notion_retry(notion.data_sources.query,
+                                 data_source_id=target_id, **kwargs)
         except Exception as exc:
             msg = str(exc).lower()
             if results or cursor or "data_source" in msg or "not_found" not in msg:
                 raise
             # Fallback: db_id pode ser um database_id; resolver data_source.
             try:
-                db = notion.databases.retrieve(database_id=db_id)
+                db = _notion_retry(notion.databases.retrieve, database_id=db_id)
                 ds_list = db.get("data_sources") or []
                 if not ds_list:
                     raise
@@ -207,15 +213,63 @@ def get_rich_text_value(page: dict, prop_name: str) -> str:
         return ""
 
 
+def _is_transient_notion_error(exc: BaseException) -> bool:
+    """Detect 429 / 5xx / connection blips worth retrying."""
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if isinstance(status, int) and (status == 429 or status >= 500):
+        return True
+    msg = str(exc).lower()
+    if any(t in msg for t in ("rate_limited", "rate limit", "timeout",
+                              "temporarily", "service_unavailable",
+                              "internal_server_error", "bad_gateway",
+                              "gateway_timeout", "connection")):
+        return True
+    return False
+
+
+def _notion_retry(fn, *args, **kwargs):
+    """Call `fn(*args, **kwargs)` with exponential backoff on transient errors.
+
+    Retries up to `NOTION_MAX_RETRIES` times. Honours `Retry-After` header
+    when the SDK exposes it on the exception (`exc.headers["retry-after"]`).
+    Non-transient errors propagate immediately.
+    """
+    delay = NOTION_RETRY_BASE_DELAY
+    last_exc = None
+    for attempt in range(NOTION_MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_transient_notion_error(exc) or attempt == NOTION_MAX_RETRIES:
+                raise
+            wait = delay
+            try:
+                hdrs = getattr(exc, "headers", None) or {}
+                ra = hdrs.get("retry-after") or hdrs.get("Retry-After")
+                if ra is not None:
+                    wait = max(wait, float(ra))
+            except Exception:
+                pass
+            log.warning(f"  ↻ Notion transient error (attempt "
+                        f"{attempt + 1}/{NOTION_MAX_RETRIES}): {exc} — "
+                        f"sleeping {wait:.1f}s")
+            time.sleep(wait)
+            delay *= 2
+    if last_exc:
+        raise last_exc
+
+
 def _list_all_block_children(block_id: str) -> list[dict]:
-    """Paginate notion.blocks.children.list — default page size is 100."""
+    """Paginate notion.blocks.children.list — default page size is 100.
+    Each underlying call is wrapped in `_notion_retry`."""
     results = []
     cursor = None
     while True:
         kwargs = {"block_id": block_id}
         if cursor:
             kwargs["start_cursor"] = cursor
-        resp = notion.blocks.children.list(**kwargs)
+        resp = _notion_retry(notion.blocks.children.list, **kwargs)
         results.extend(resp.get("results", []))
         if not resp.get("has_more"):
             break
@@ -230,10 +284,57 @@ def _rich(bloco: dict, tipo: str) -> str:
     return "".join(r.get("plain_text", "") for r in rich)
 
 
-def extrair_texto_blocos(blocos: list, nivel: int = 0) -> str:
+def _render_table_row_cells(cells: list) -> str:
+    """Notion table_row → 'a | b | c' (no surrounding pipes)."""
+    return " | ".join(
+        "".join(r.get("plain_text", "") for r in (cell or []))
+        for cell in cells
+    )
+
+
+def _render_table(rows: list) -> str:
+    """Render a list of `table_row` blocks as a markdown table with header
+    separator. First row is treated as the header (Notion's `has_column_header`
+    is *intent*; we always emit a separator so the IA gets structured input)."""
+    rendered = []
+    for r in rows:
+        if r.get("type") != "table_row":
+            continue
+        cells = (r.get("table_row") or {}).get("cells", [])
+        rendered.append((len(cells), _render_table_row_cells(cells)))
+    if not rendered:
+        return ""
+    n_cols = max(n for n, _ in rendered)
+    out = ["| " + rendered[0][1] + " |",
+           "|" + "|".join(["---"] * max(n_cols, 1)) + "|"]
+    out.extend("| " + body + " |" for _, body in rendered[1:])
+    return "\n".join(out)
+
+
+def extrair_texto_blocos(blocos: list, nivel: int = 0,
+                         visited: set | None = None) -> str:
+    """Render Notion blocks to text.
+
+    Safety nets:
+    - `nivel >= MAX_BLOCK_DEPTH` truncates recursion (Notion allows arbitrary
+      nesting via synced_block / column_list).
+    - `visited` tracks block ids to break cycles (a synced_block can transitively
+      reference itself).
+    """
+    if nivel >= MAX_BLOCK_DEPTH:
+        return ""
+    if visited is None:
+        visited = set()
+
     linhas = []
     indent = "  " * nivel
     for bloco in blocos:
+        bid = bloco.get("id")
+        if bid and bid in visited:
+            continue
+        if bid:
+            visited.add(bid)
+
         tipo  = bloco["type"]
         texto = ""
         recurse_children = True
@@ -275,29 +376,52 @@ def extrair_texto_blocos(blocos: list, nivel: int = 0) -> str:
                 texto = f"[{cap}]({url})"
             elif url:
                 texto = url
+        elif tipo == "link_preview":
+            url = (bloco.get("link_preview") or {}).get("url", "")
+            if url:
+                texto = url
+        elif tipo == "link_to_page":
+            ltp = bloco.get("link_to_page") or {}
+            ref_type = ltp.get("type", "")
+            ref_id   = ltp.get(ref_type, "") if ref_type else ""
+            if ref_id:
+                texto = f"[link → {ref_type}:{ref_id}]"
+        elif tipo in ("breadcrumb", "table_of_contents", "unsupported"):
+            pass  # skip silently — no useful text
         elif tipo in ("image", "video", "file", "pdf", "audio"):
             cap = "".join(r.get("plain_text", "")
                           for r in (bloco.get(tipo) or {}).get("caption", []))
             if cap:
                 texto = f"[{tipo}: {cap}]"
+        elif tipo == "table":
+            # Pull rows and emit a real markdown table in one shot.
+            if bloco.get("has_children"):
+                try:
+                    rows = _list_all_block_children(bid) if bid else []
+                except Exception:
+                    rows = []
+                table_md = _render_table(rows)
+                if table_md:
+                    linhas.append("\n".join(f"{indent}{line}"
+                                            for line in table_md.splitlines()))
+            recurse_children = False
+            continue
         elif tipo == "table_row":
+            # Reached when a table_row appears outside its parent table (rare).
             cells = (bloco.get("table_row") or {}).get("cells", [])
-            row = " | ".join(
-                "".join(r.get("plain_text", "") for r in (cell or []))
-                for cell in cells
-            )
+            row = _render_table_row_cells(cells)
             if row.strip():
                 texto = "| " + row + " |"
-            recurse_children = False  # table_row has no further children
-        elif tipo in ("table", "column_list", "column", "synced_block"):
+            recurse_children = False
+        elif tipo in ("column_list", "column", "synced_block"):
             pass  # render through children only
 
         if texto.strip():
             linhas.append(f"{indent}{texto}")
         if recurse_children and bloco.get("has_children"):
             try:
-                filhos = _list_all_block_children(bloco["id"])
-                child_text = extrair_texto_blocos(filhos, nivel + 1)
+                filhos = _list_all_block_children(bid) if bid else []
+                child_text = extrair_texto_blocos(filhos, nivel + 1, visited)
                 if child_text.strip():
                     linhas.append(child_text)
             except Exception:
@@ -305,15 +429,34 @@ def extrair_texto_blocos(blocos: list, nivel: int = 0) -> str:
     return "\n".join(linhas)
 
 
-def get_page_content(page_id: str) -> str:
+def get_page_content(page_id: str,
+                     page_last_edited_at: str | None = None) -> str:
     """Extrai conteúdo textual de blocos internos de uma página.
 
     Pagina blocks.children.list para cobrir páginas longas (>100 blocos)
     e descende recursivamente em blocos com filhos.
+
+    Se `page_last_edited_at` for fornecido, consulta o cache local
+    (`page_block_cache`) e devolve direto quando a página não mudou desde
+    o último fetch — economiza N requests por página em re-syncs.
     """
+    if page_last_edited_at:
+        try:
+            cached = sync_db.get_cached_page_content(page_id, page_last_edited_at)
+        except Exception as exc:
+            log.debug(f"cache read failed for {page_id}: {exc}")
+            cached = None
+        if cached is not None:
+            return cached
     try:
         blocos = _list_all_block_children(page_id)
-        return extrair_texto_blocos(blocos).strip()
+        texto  = extrair_texto_blocos(blocos).strip()
+        if page_last_edited_at:
+            try:
+                sync_db.set_cached_page_content(page_id, page_last_edited_at, texto)
+            except Exception as exc:
+                log.debug(f"cache write failed for {page_id}: {exc}")
+        return texto
     except Exception as e:
         log.warning(f"Erro ao ler blocos de {page_id}: {e}")
         return ""
@@ -327,8 +470,9 @@ def find_child_database(page_id: str, keyword: str) -> str | None:
     cujo nome contenha a keyword; se nenhuma casar, usa a primeira.
     """
     try:
-        children = notion.blocks.children.list(block_id=page_id)
-        for block in children["results"]:
+        # Pagina + retry — child DBs podem aparecer depois dos 100 primeiros blocos.
+        results = _list_all_block_children(page_id)
+        for block in results:
             if block["type"] != "child_database":
                 continue
             title = block["child_database"].get("title", "")
@@ -336,7 +480,8 @@ def find_child_database(page_id: str, keyword: str) -> str | None:
                 continue
             db_block_id = block["id"]
             try:
-                db = notion.databases.retrieve(database_id=db_block_id)
+                db = _notion_retry(notion.databases.retrieve,
+                                   database_id=db_block_id)
                 sources = db.get("data_sources") or []
                 if not sources:
                     return db_block_id  # fallback legacy
@@ -352,7 +497,8 @@ def find_child_database(page_id: str, keyword: str) -> str | None:
 
 
 def marcar_sincronizado(page_id: str, prop_name: str, valor: str):
-    notion.pages.update(
+    _notion_retry(
+        notion.pages.update,
         page_id=page_id,
         properties={prop_name: {"select": {"name": valor}}},
     )
@@ -738,6 +884,7 @@ def processar_hierarquico(cfg: dict) -> dict:
     child_sync_done     = cfg.get("child_sync_done", "✅ Sincronizado")
     anki_deck_root      = cfg.get("anki_deck_root", "Notion::Sync")
     last_sync_time      = cfg.get("last_sync_time")
+    max_cards_cfg       = int(cfg.get("max_cards") or MAX_FLASHCARDS_POR_AULA)
 
     total = {"disciplinas": 0, "itens": 0, "gerados": 0, "enviados": 0, "erros": 0}
 
@@ -807,7 +954,8 @@ def processar_hierarquico(cfg: dict) -> dict:
                 resumo = get_rich_text_value(item, child_content_prop)
                 if resumo:
                     partes.append(f"[Resumo]\n{resumo}")
-            conteudo_blocos = get_page_content(item["id"])
+            conteudo_blocos = get_page_content(item["id"],
+                                               item.get("last_edited_time"))
             if conteudo_blocos:
                 partes.append(f"[Anotações]\n{conteudo_blocos}")
             conteudo = "\n\n".join(partes)
@@ -821,7 +969,8 @@ def processar_hierarquico(cfg: dict) -> dict:
             total["itens"] += 1
 
             # Gera flashcards
-            cards = gerar_flashcards(nome_categoria, titulo, data, conteudo)
+            cards = gerar_flashcards(nome_categoria, titulo, data, conteudo,
+                                     max_cards=max_cards_cfg)
             total["gerados"] += len(cards)
 
             if not cards:
@@ -869,6 +1018,7 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
     status_val     = cfg.get("child_status_complete")
     anki_deck_root = cfg.get("anki_deck_root", "Notion::Sync")
     last_sync_time = cfg.get("last_sync_time")
+    max_cards_cfg  = int(cfg.get("max_cards") or MAX_FLASHCARDS_POR_AULA)
 
     deck_name = f"{anki_deck_root}::{db_name}"
 
@@ -911,7 +1061,8 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
             resumo = get_rich_text_value(item, content_prop)
             if resumo:
                 partes.append(resumo)
-        conteudo_blocos = get_page_content(item["id"])
+        conteudo_blocos = get_page_content(item["id"],
+                                           item.get("last_edited_time"))
         if conteudo_blocos:
             partes.append(conteudo_blocos)
         conteudo = "\n\n".join(partes)
@@ -923,7 +1074,8 @@ def _processar_db_plano(db_id: str, db_name: str, cfg: dict, total: dict):
             continue
 
         total["itens"] += 1
-        cards = gerar_flashcards(db_name, titulo, data, conteudo)
+        cards = gerar_flashcards(db_name, titulo, data, conteudo,
+                                 max_cards=max_cards_cfg)
         total["gerados"] += len(cards)
 
         if not cards:
@@ -952,6 +1104,7 @@ _PER_DB_OVERRIDE_KEYS = (
     "child_content_prop", "child_date_prop", "use_sync_field",
     "child_sync_prop", "child_sync_done",
     "child_status_prop", "child_status_complete",
+    "max_cards",
 )
 
 

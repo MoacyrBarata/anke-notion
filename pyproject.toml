@@ -1,0 +1,29 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    ".venv",
+    ".update_backup",
+    "sync_history.db",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# CI lint focus: real correctness issues only (pyflakes + bugbear).
+# Style rules (E/W/I/UP) are off by default to keep the noise out of CI;
+# add them locally with `ruff check --select E,I,UP` when doing a cleanup pass.
+select = ["F", "B"]
+ignore = [
+    "B008",   # function call in default argument — common Flet pattern
+    "B904",   # raise without `from` — noisy in retry helpers
+    "B007",   # unused loop var — common idiom (`for _ in ...`)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*"    = ["B011", "B017", "F401", "F811", "F841"]
+"launcher.py" = ["F841"]   # webview window ref kept intentionally for lifetime
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

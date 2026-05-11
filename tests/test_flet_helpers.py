@@ -376,3 +376,77 @@ def test_get_database_properties_returns_props(monkeypatch):
     result = app_flet.get_database_properties("secret_tok", "db_id_123")
     assert "Name" in result
     assert "Due" in result
+
+
+# ── parse_max_cards ──────────────────────────────────────────────────────────
+
+class TestParseMaxCards:
+    def test_positive_integer(self):
+        assert app_flet.parse_max_cards("25") == 25
+
+    def test_empty_returns_none(self):
+        assert app_flet.parse_max_cards("") is None
+        assert app_flet.parse_max_cards(None) is None
+
+    def test_zero_returns_none(self):
+        # zero would silence the IA entirely — treat as "use global default".
+        assert app_flet.parse_max_cards("0") is None
+
+    def test_negative_returns_none(self):
+        assert app_flet.parse_max_cards("-5") is None
+
+    def test_non_integer_returns_none(self):
+        assert app_flet.parse_max_cards("abc") is None
+        assert app_flet.parse_max_cards("3.5") is None
+
+    def test_strips_whitespace(self):
+        assert app_flet.parse_max_cards("  10  ") == 10
+
+    def test_int_input(self):
+        assert app_flet.parse_max_cards(7) == 7
+
+
+# ── default_content_dropdown_value ────────────────────────────────────────────
+
+def _page_with(prop_name: str, ptype: str, value):
+    """Helper: build a fake page with a single property."""
+    if ptype == "rich_text":
+        prop = {"type": "rich_text", "rich_text": [{"plain_text": value}]}
+    elif ptype == "title":
+        prop = {"type": "title", "title": [{"plain_text": value}]}
+    else:
+        prop = {"type": ptype, ptype: value}
+    return {"properties": {prop_name: prop}}
+
+
+class TestDefaultContentDropdownValue:
+    def test_saved_value_wins(self):
+        page = _page_with("Conteúdo", "rich_text", "tem texto")
+        assert app_flet.default_content_dropdown_value(
+            "Custom Col", "Conteúdo", page) == "Custom Col"
+
+    def test_hint_used_when_sample_has_text(self):
+        page = _page_with("Conteúdo", "rich_text", "resumo da aula")
+        assert app_flet.default_content_dropdown_value(
+            None, "Conteúdo", page) == "Conteúdo"
+
+    def test_falls_to_nenhum_when_sample_cell_empty(self):
+        # New Notion pattern: cell empty, content in page blocks.
+        page = _page_with("Conteúdo", "rich_text", "")
+        assert app_flet.default_content_dropdown_value(
+            None, "Conteúdo", page) == "(nenhum)"
+
+    def test_nenhum_when_sample_only_whitespace(self):
+        page = _page_with("Conteúdo", "rich_text", "   \n\t ")
+        assert app_flet.default_content_dropdown_value(
+            None, "Conteúdo", page) == "(nenhum)"
+
+    def test_nenhum_when_no_hint(self):
+        page = _page_with("X", "rich_text", "anything")
+        assert app_flet.default_content_dropdown_value(None, None, page) \
+            == "(nenhum)"
+
+    def test_nenhum_when_no_sample(self):
+        assert app_flet.default_content_dropdown_value(None, "Conteúdo", None) \
+            == "(nenhum)"
+
